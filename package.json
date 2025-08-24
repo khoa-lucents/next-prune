@@ -1,6 +1,6 @@
 {
 	"name": "next-prune",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Interactive terminal UI to prune Next.js build artifacts and caches to free disk space",
 	"license": "MIT",
 	"author": "next-prune contributors",
@@ -29,7 +29,9 @@
 		"disk-space",
 		"webpack-cache"
 	],
-	"bin": "dist/cli.js",
+	"bin": {
+		"next-prune": "dist/cli.js"
+	},
 	"type": "module",
 	"engines": {
 		"node": ">=16"
@@ -37,9 +39,9 @@
 	"scripts": {
 		"build": "babel --out-dir=dist source",
 		"dev": "babel --out-dir=dist --watch source",
-		"test": "prettier --check . && xo && ava"
+		"test": "prettier --check . && xo && ava",
+		"prepublishOnly": "npm run build && npm test"
 	},
-	"prepublishOnly": "npm run build && npm test",
 	"files": [
 		"dist"
 	],
@@ -75,7 +77,17 @@
 		"prettier": true,
 		"rules": {
 			"react/prop-types": "off",
-			"unicorn/expiring-todo-comments": "off"
+			"unicorn/expiring-todo-comments": "off",
+			"unicorn/prevent-abbreviations": "off",
+			"react/jsx-sort-props": "off",
+			"react/no-array-index-key": "off",
+			"no-undef-init": "off",
+			"complexity": "warn",
+			"capitalized-comments": "warn",
+			"padding-line-between-statements": "warn",
+			"no-await-in-loop": "warn",
+			"unicorn/prefer-switch": "warn",
+			"react/self-closing-comp": "warn"
 		}
 	},
 	"prettier": "@vdemedes/prettier-config",
