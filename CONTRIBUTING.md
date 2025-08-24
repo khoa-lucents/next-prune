@@ -1,8 +1,7 @@
 # Contributing
 
-Thanks for your interest in contributing! Please read AGENTS.md for project-specific guidelines.
+Thanks for your interest in contributing!
 
-- Read: AGENTS.md for repo structure, scripts, lint/test rules.
 - Style: XO + Prettier, tabs indentation; run `npm test` before pushing.
 - Commits: Conventional Commits (e.g., `feat(cli): add --json`).
 - PRs: Include context, reproduction or screenshots, and tests when relevant.

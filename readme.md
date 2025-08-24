@@ -3,21 +3,23 @@
 > Prune Next.js build artifacts and caches from your terminal. Interactive TUI to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, and other safe-to-delete directories to free disk space.
 
 [![npm version](https://img.shields.io/npm/v/next-prune.svg)](https://www.npmjs.com/package/next-prune)
-[![CI](https://github.com/OWNER/next-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/next-prune/actions/workflows/ci.yml)
+[![CI](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/next-prune.svg)](https://nodejs.org/)
 
 ## What Gets Pruned
 
 **Safe to delete (recreated by tools):**
+
 - `.next/` - Next.js build output and cache
-- `out/` - Next.js static export output  
+- `out/` - Next.js static export output
 - `.vercel/output/` - Vercel Build Output API bundle
 - `.turbo/` - Turborepo cache (default at `.turbo/cache`)
 - `.vercel_build_output/` - Legacy Vercel build output
 - `node_modules/.cache/next` - Next.js cache in node_modules
 
 **Always preserved:**
+
 - `.vercel/project.json` - Keeps local folder linked to Vercel project
 - `vercel.json` - Vercel project configuration
 - `next.config.*` - Next.js configuration
@@ -38,10 +40,24 @@
 $ npm install --global next-prune
 ```
 
-## CLI
+## Quick Start
 
+```bash
+# Scan and interactively select what to delete
+$ npx next-prune
+
+# One-shot cleanup (no prompts)
+$ npx next-prune --yes
+
+# Non-interactive listing
+$ npx next-prune --list
+
+$ npx next-prune --json
 ```
 
+## CLI
+
+```text
 $ next-prune --help
 
   Usage
@@ -60,6 +76,7 @@ $ next-prune --help
     $ next-prune --list         # list found artifacts
     $ next-prune --json         # machine-readable output
     $ next-prune --yes          # one-shot cleanup
+```
 
 ## One-Shot Cleanup
 
@@ -72,9 +89,8 @@ $ next-prune --yes
 
 ## Contributing
 
-See `CONTRIBUTING.md` and `AGENTS.md`. By participating, you agree to our `CODE_OF_CONDUCT.md`.
+See `CONTRIBUTING.md`. By participating, you agree to our `CODE_OF_CONDUCT.md`.
 
 ## License
 
 MIT © next-prune contributors
-```

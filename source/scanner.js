@@ -16,11 +16,11 @@ export const FRAMES = Object.freeze([
 
 // Patterns for Next.js and related build artifacts/caches
 const CACHE_PATTERNS = [
-	'.next',                    // Next.js build output and cache
-	'out',                      // Next.js static export output
-	'.vercel/output',           // Vercel Build Output API bundle
-	'.turbo',                   // Turborepo cache
-	'.vercel_build_output',     // Legacy Vercel build output
+	'.next', // Next.js build output and cache
+	'out', // Next.js static export output
+	'.vercel/output', // Vercel Build Output API bundle
+	'.turbo', // Turborepo cache
+	'.vercel_build_output', // Legacy Vercel build output
 	'node_modules/.cache/next', // Next.js cache in node_modules
 ];
 
@@ -82,13 +82,13 @@ export const findNextCaches = async cwd => {
 	for await (const dir of walk(cwd)) {
 		const base = path.basename(dir);
 		const relativePath = path.relative(cwd, dir);
-		
+
 		// Check if this directory matches any of our patterns
 		if (CACHE_PATTERNS.includes(base)) {
 			results.push(dir);
 			continue;
 		}
-		
+
 		// Special handling for nested patterns like .vercel/output
 		for (const pattern of CACHE_PATTERNS) {
 			if (pattern.includes('/') && relativePath === pattern) {

@@ -17,4 +17,4 @@ Describe the changes and rationale.
 
 - [ ] Tests added/updated
 - [ ] `npm test` passes locally
-- [ ] Docs updated (README/AGENTS)
+- [ ] Docs updated (README)
