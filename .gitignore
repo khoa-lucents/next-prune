@@ -1,2 +1,10 @@
 node_modules
 dist
+# build artifacts
+*.tgz
+.DS_Store
+
+# build artifacts
+*.tgz
+.DS_Store
+artifacts/

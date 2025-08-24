@@ -1,4 +1,4 @@
-# Next Prune 🌿
+# Next Prune 🧹
 
 > Prune Next.js build artifacts and caches from your terminal. Interactive TUI to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, and other safe-to-delete directories to free disk space.
 
