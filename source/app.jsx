@@ -1,5 +1,6 @@
 import process from 'node:process';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 
 import React, {useState, useEffect, useMemo} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
@@ -193,8 +194,110 @@ export default function App({
 		[scanSegments, cols],
 	);
 
+	// Trigger a (re)scan
+	const doScan = async () => {
+		setLoading(true);
+		setError('');
+		try {
+			const paths = await findNextCaches(cwd);
+			const sizes = await Promise.all(paths.map(p => getDirSize(p)));
+			const nextItems = [];
+			for (let i = 0; i < paths.length; i += 1)
+				nextItems.push({path: paths[i], size: sizes[i]});
+			setItems(nextItems);
+			// Reset UI focus/help after a fresh scan
+			setIndex(0);
+			setShowHelp(false);
+		} catch (error_) {
+			setError(String(error_?.message ?? error_));
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	// Deletion handler: performs dry-run or actual deletion for selected items
+	const performDeletion = async () => {
+		try {
+			const selectedIndices = [...selected].filter(
+				i => items[i]?.status !== 'deleted',
+			);
+			if (selectedIndices.length === 0) {
+				setConfirm(false);
+				return;
+			}
+			if (dryRun) {
+				setItems(prev =>
+					prev.map((it, i) =>
+						selectedIndices.includes(i) ? {...it, status: 'dry-run'} : it,
+					),
+				);
+				setError(
+					`✅ Dry-run: would delete ${
+						selectedIndices.length
+					} directories (${human(selectedSize)})`,
+				);
+				setSelected(new Set());
+				setConfirm(false);
+				return;
+			}
+
+			// Mark as deleting
+			setItems(prev =>
+				prev.map((it, i) =>
+					selectedIndices.includes(i) ? {...it, status: 'deleting'} : it,
+				),
+			);
+			const snapshot = items;
+			let freed = 0;
+			const successes = new Set();
+			for (const i of selectedIndices) {
+				const p = snapshot[i]?.path;
+				try {
+					if (p) {
+						await fs.rm(p, {recursive: true, force: true});
+						successes.add(i);
+						const s = snapshot[i]?.size;
+						freed += typeof s === 'number' ? s : 0;
+					}
+				} catch (error_) {
+					// Mark error for this item
+					setItems(prev =>
+						prev.map((it, j) => (j === i ? {...it, status: 'error'} : it)),
+					);
+					setError(`Failed to delete: ${p} (${error_?.message ?? error_})`);
+				}
+			}
+			// Mark successful deletions
+			if (successes.size > 0) {
+				setItems(prev =>
+					prev.map((it, i) =>
+						successes.has(i) ? {...it, status: 'deleted', size: 0} : it,
+					),
+				);
+				setError(
+					`✅ Deleted ${successes.size} directories (freed ${human(freed)})`,
+				);
+			}
+		} finally {
+			setSelected(new Set());
+			setConfirm(false);
+		}
+	};
+
 	// Basic input handling keeps stdin listener active so the app doesn't exit after scanning
 	useInput((input, key) => {
+		// Handle confirmation modal first
+		if (confirm) {
+			if (key.escape || input?.toLowerCase() === 'n') {
+				setConfirm(false);
+				return;
+			}
+			if (input?.toLowerCase() === 'y') {
+				performDeletion();
+				return;
+			}
+			return;
+		}
 		// Global Quit
 		if (
 			key.escape ||
@@ -211,7 +314,7 @@ export default function App({
 		} else if (key.downArrow) {
 			// Navigate Down
 			setIndex(i => Math.min(Math.max(0, items.length - 1), i + 1));
-		} else if (key.space) {
+		} else if (input === ' ') {
 			// Selection Toggle
 			setSelected(cur => {
 				const next = new Set(cur);
@@ -229,6 +332,17 @@ export default function App({
 		} else if (input === 'c') {
 			// Clear Selection
 			setSelected(new Set());
+		} else if (input?.toLowerCase() === 'd' || key.return) {
+			// Open confirm; if none selected, select the focused item if allowed
+			if (selected.size > 0) {
+				setConfirm(true);
+			} else if (items[index]?.status !== 'deleted') {
+				setSelected(new Set([index]));
+				setConfirm(true);
+			}
+		} else if (input?.toLowerCase() === 'r' && !loading) {
+			// Rescan
+			doScan();
 		}
 	});
 
@@ -278,30 +392,8 @@ export default function App({
 
 	useEffect(() => {
 		if (testMode) return;
-		let cancelled = false;
-		(async () => {
-			try {
-				setLoading(true);
-				setError('');
-				const paths = await findNextCaches(cwd);
-				const sizes = await Promise.all(paths.map(p => getDirSize(p)));
-				if (cancelled) return;
-				const nextItems = [];
-				for (let i = 0; i < paths.length; i += 1)
-					nextItems.push({path: paths[i], size: sizes[i]});
-				setItems(nextItems);
-				// Reset UI focus/help after a fresh scan
-				setIndex(0);
-				setShowHelp(false);
-			} catch (error_) {
-				if (!cancelled) setError(String(error_?.message ?? error_));
-			} finally {
-				if (!cancelled) setLoading(false);
-			}
-		})();
-		return () => {
-			cancelled = true;
-		};
+		doScan();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [cwd, testMode]);
 
 	useEffect(() => {
