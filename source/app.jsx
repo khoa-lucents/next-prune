@@ -3,7 +3,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import React, {useState, useEffect, useMemo} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
-import {scanArtifacts, getArtifactStats, FRAMES, human, timeAgo} from './scanner.js';
+import {
+	scanArtifacts,
+	getArtifactStats,
+	FRAMES,
+	human,
+	timeAgo,
+} from './scanner.js';
 import {findUnusedAssets} from './asset-scanner.js';
 
 // Scanner utilities are imported from ./scanner.js
@@ -106,12 +112,18 @@ function truncateMiddle(text, max) {
 	return text.slice(0, head) + '…' + text.slice(text.length - tail);
 }
 
+const DEFAULT_CONFIG = {
+	alwaysDelete: [],
+	neverDelete: [],
+	checkUnusedAssets: false,
+};
+
 export default function App({
 	cwd = process.cwd(),
 	dryRun = false,
 	confirmImmediately = false,
 	testMode = false,
-	config = {alwaysDelete: [], neverDelete: [], checkUnusedAssets: false},
+	config = DEFAULT_CONFIG,
 }) {
 	const {exit} = useApp();
 	const [items, setItems] = useState([]); // {path, size, mtime, fileCount, status}
@@ -226,8 +238,8 @@ export default function App({
 			if (config.neverDelete?.length > 0) {
 				nextItems = nextItems.filter(it => {
 					const rel = path.relative(cwd, it.path);
-					return !config.neverDelete.some(pattern =>
-						rel === pattern || rel.startsWith(pattern + path.sep),
+					return !config.neverDelete.some(
+						pattern => rel === pattern || rel.startsWith(pattern + path.sep),
 					);
 				});
 			}
@@ -304,9 +316,7 @@ export default function App({
 						successes.has(i) ? {...it, status: 'deleted', size: 0} : it,
 					),
 				);
-				setError(
-					`✅ Deleted ${successes.size} items (freed ${human(freed)})`,
-				);
+				setError(`✅ Deleted ${successes.size} items (freed ${human(freed)})`);
 			}
 		} finally {
 			setSelected(new Set());
@@ -462,15 +472,16 @@ export default function App({
 		// 2. Otherwise, check config.alwaysDelete
 		if (config.alwaysDelete?.length > 0) {
 			const preSelected = new Set();
-			items.forEach((it, i) => {
+			for (const [i, it] of items.entries()) {
 				const rel = path.relative(cwd, it.path);
-				const shouldSelect = config.alwaysDelete.some(pattern =>
-					rel === pattern || rel.startsWith(pattern + path.sep),
+				const shouldSelect = config.alwaysDelete.some(
+					pattern => rel === pattern || rel.startsWith(pattern + path.sep),
 				);
 				if (shouldSelect && it.status !== 'deleted') {
 					preSelected.add(i);
 				}
-			});
+			}
+
 			if (preSelected.size > 0) {
 				setSelected(preSelected);
 			}
@@ -611,16 +622,17 @@ export default function App({
 						const containerWidth = Math.max(24, (cols || 80) - 6);
 						const leftPart = `${prefix} ${mark} ${sizeText.padStart(7)} `;
 						const metaPart = ` ${timeText.padEnd(8)} `;
-						
+
 						// Add icon based on type/directory
-						const icon = it.isDirectory === false ? '📄' : '📁';
-						const relText = (it.type === 'asset' ? '⚠️ ' : '') + icon + ' ' + displayRel;
+						// const icon = it.isDirectory === false ? '📄' : '📁';
 
 						const reserved =
-							leftPart.length + metaPart.length + (statusText ? statusText.length : 0);
+							leftPart.length +
+							metaPart.length +
+							(statusText ? statusText.length : 0);
 						// Adjusted maxRel calculation to account for icon and warning
-						const maxRel = Math.max(3, containerWidth - reserved - 4); 
-						
+						const maxRel = Math.max(3, containerWidth - reserved - 4);
+
 						return (
 							<Box key={it.path}>
 								<Text
@@ -638,9 +650,18 @@ export default function App({
 									strikethrough={it.status === 'deleted'}
 								>
 									{leftPart}
-									<Text dimColor={it.status === 'deleted' ? true : false} color={it.status === 'deleted' ? 'gray' : 'yellow'}>{metaPart}</Text>
+									<Text
+										dimColor={it.status === 'deleted'}
+										color={it.status === 'deleted' ? 'gray' : 'yellow'}
+									>
+										{metaPart}
+									</Text>
 									{it.type === 'asset' ? <Text color="yellow">⚠️ </Text> : null}
-									{it.isDirectory === false ? <Text>📄 </Text> : <Text>📁 </Text>}
+									{it.isDirectory === false ? (
+										<Text>📄 </Text>
+									) : (
+										<Text>📁 </Text>
+									)}
 									{truncateMiddle(rel, maxRel)}
 								</Text>
 								{statusText ? (

@@ -5,7 +5,7 @@ import process from 'node:process';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import test from 'ava';
-import {scanWithSizes, human} from './source/scanner.js';
+import {scanArtifacts, human} from './source/scanner.js';
 
 test('scanner finds .next and node_modules/.cache/next', async t => {
 	const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'next-prune-'));
@@ -15,7 +15,7 @@ test('scanner finds .next and node_modules/.cache/next', async t => {
 		recursive: true,
 	});
 
-	const items = await scanWithSizes(appDir);
+	const items = await scanArtifacts(appDir);
 	const sorted = items.map(i => path.relative(appDir, i.path)).sort();
 
 	// Expect both cache locations to be discovered

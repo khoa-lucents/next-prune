@@ -66,7 +66,15 @@ export const findUnusedAssets = async cwd => {
 
 	// 2. Gather all source files
 	const sourceFiles = [];
-	const srcDirs = ['src', 'app', 'pages', 'components', 'lib', 'utils', 'hooks'];
+	const srcDirs = [
+		'src',
+		'app',
+		'pages',
+		'components',
+		'lib',
+		'utils',
+		'hooks',
+	];
 	// Also check root files
 	const rootFiles = await fs.readdir(cwd);
 	for (const f of rootFiles) {
@@ -104,15 +112,16 @@ export const findUnusedAssets = async cwd => {
 	for (const asset of assets) {
 		const filename = path.basename(asset);
 		const relPath = path.relative(publicDir, asset); // e.g. "images/logo.png"
-		
+
 		// Naive check: does the filename appear?
 		// Or the relative path?
 		// We check both "logo.png" and "images/logo.png"
-		
+
 		const nameMatch = fullSource.includes(filename);
 		// For relative path, we need to be careful about slashes.
 		// In code it might be "/images/logo.png"
-		const relMatch = fullSource.includes(relPath) || fullSource.includes('/' + relPath);
+		const relMatch =
+			fullSource.includes(relPath) || fullSource.includes('/' + relPath);
 
 		if (!nameMatch && !relMatch) {
 			unused.push(asset);

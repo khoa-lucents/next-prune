@@ -65,7 +65,7 @@ async function main() {
 
 	if (cli.flags.list || cli.flags.json) {
 		let items = await scanArtifacts(props.cwd);
-		
+
 		if (config.checkUnusedAssets) {
 			const assetPaths = await findUnusedAssets(props.cwd);
 			const assetStats = await Promise.all(
@@ -84,7 +84,9 @@ async function main() {
 		if (config.neverDelete.length > 0) {
 			items = items.filter(it => {
 				const rel = path.relative(props.cwd, it.path);
-				return !config.neverDelete.some(pattern => rel === pattern || rel.startsWith(pattern + path.sep));
+				return !config.neverDelete.some(
+					pattern => rel === pattern || rel.startsWith(pattern + path.sep),
+				);
 			});
 		}
 
@@ -105,9 +107,7 @@ async function main() {
 			);
 		}
 
-		process.stdout.write(
-			`\nTotal: ${human(total)} in ${items.length} items\n`,
-		);
+		process.stdout.write(`\nTotal: ${human(total)} in ${items.length} items\n`);
 		return;
 	}
 

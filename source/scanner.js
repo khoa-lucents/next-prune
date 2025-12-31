@@ -59,12 +59,12 @@ export const human = bytes => {
 
 export const timeAgo = date => {
 	if (!date) return '';
-	const seconds = Math.floor((new Date() - date) / 1000);
-	let interval = seconds / 31536000;
+	const seconds = Math.floor((Date.now() - date) / 1000);
+	let interval = seconds / 31_536_000;
 	if (interval > 1) return Math.floor(interval) + 'y ago';
-	interval = seconds / 2592000;
+	interval = seconds / 2_592_000;
 	if (interval > 1) return Math.floor(interval) + 'mo ago';
-	interval = seconds / 86400;
+	interval = seconds / 86_400;
 	if (interval > 1) return Math.floor(interval) + 'd ago';
 	interval = seconds / 3600;
 	if (interval > 1) return Math.floor(interval) + 'h ago';
@@ -220,13 +220,10 @@ export const getArtifactStats = async p => {
 export const scanArtifacts = async cwd => {
 	const paths = await findArtifacts(cwd);
 	const stats = await Promise.all(paths.map(p => getArtifactStats(p)));
-	const items = [];
-	for (let i = 0; i < paths.length; i += 1) {
-		items.push({
-			path: paths[i],
-			...stats[i],
-		});
-	}
+	const items = paths.map((path_, index) => ({
+		path: path_,
+		...stats[index],
+	}));
 
 	// Sort by size (descending)
 	return items.sort((a, b) => b.size - a.size);
