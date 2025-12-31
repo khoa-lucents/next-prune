@@ -27,9 +27,10 @@
 
 **Features:**
 
-- 🎯 Interactive terminal UI built with [Ink](https://github.com/vadimdemedes/ink)
+- 🎯 **New:** Modern Dashboard UI with statistical overview
 - 🔍 Scans recursively for Next.js, Vercel, and Turborepo build artifacts
 - 📊 Shows disk usage for each directory found
+- ⇅ **New:** Sort artifacts by Size, Age, or Path
 - ✅ Select multiple directories for batch deletion
 - 🚀 Non-interactive modes for scripting (`--list`, `--json`)
 - 🛡️ Safe deletion with confirmation prompts
