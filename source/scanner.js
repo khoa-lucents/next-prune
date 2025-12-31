@@ -120,7 +120,13 @@ export const getDirSize = async dir => {
 
 		const paths = entries.map(entry => path.join(d, entry.name));
 		const stats = await Promise.all(
-			paths.map(p => fs.lstat(p).catch(() => undefined)),
+			paths.map(async p => {
+				try {
+					return await fs.lstat(p);
+				} catch {
+					return undefined;
+				}
+			}),
 		);
 
 		let sizeHere = 0;

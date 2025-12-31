@@ -3,12 +3,14 @@
 This document describes how to cut a new release, publish to npm, and create a GitHub release for next-prune.
 
 ## Prerequisites
+
 - Node.js 16+ and npm configured
 - Git access to `khoa-lucents/next-prune` with push/tag permissions
 - npm publish permission for the `next-prune` package (2FA if enabled)
 - GitHub CLI (`gh`) installed and authenticated, or be ready to create releases via web UI
 
 ## TL;DR (happy path)
+
 ```
 # Ensure clean working tree and up-to-date main
 git pull
@@ -39,7 +41,8 @@ env -u GITHUB_TOKEN -u GH_TOKEN gh release create "v$VERSION" "artifacts/$TGZ" \
 
 ## Step-by-step
 
-1) Validate state
+1. Validate state
+
 - Ensure you are on `main` and up to date:
   - `git status` should be clean
   - `git pull`
@@ -47,7 +50,8 @@ env -u GITHUB_TOKEN -u GH_TOKEN gh release create "v$VERSION" "artifacts/$TGZ" \
   - `npm ci && npm test`
   - CI will also run on push; aim for green before publishing
 
-2) Version bump (SemVer)
+2. Version bump (SemVer)
+
 - Decide bump type:
   - Patch: bug fixes or internal improvements (x.y.Z)
   - Minor: backward-compatible features (x.Y.z)
@@ -56,15 +60,19 @@ env -u GITHUB_TOKEN -u GH_TOKEN gh release create "v$VERSION" "artifacts/$TGZ" \
   - `npm version patch -m "Release v%s: <summary>"`
   - This updates `package.json`, creates a commit, and creates tag `v<version>`
 
-3) Push
+3. Push
+
 - `git push && git push --tags`
 
-4) Publish to npm
+4. Publish to npm
+
 - `npm publish --access public`
 - The `prepublishOnly` script runs `npm run build && npm test`. If it fails, fix first.
 
-5) Create a GitHub release
+5. Create a GitHub release
+
 - Pack a tarball and create a release (recommended with `gh`):
+
 ```
 VERSION=$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")
 mkdir -p artifacts
@@ -74,6 +82,7 @@ env -u GITHUB_TOKEN -u GH_TOKEN gh release create "v$VERSION" "artifacts/$TGZ" \
   --title "v$VERSION" \
   --notes "- TUI: ...\n- Fixes: ...\n- Docs/Repo: ..."
 ```
+
 - If you prefer the web UI:
   - Go to GitHub → Releases → "Draft a new release"
   - Tag: `v<version>` (use the pushed tag), Title: `v<version>`
@@ -81,6 +90,7 @@ env -u GITHUB_TOKEN -u GH_TOKEN gh release create "v$VERSION" "artifacts/$TGZ" \
   - Upload `artifacts/next-prune-<version>.tgz`
 
 ## Release notes template
+
 ```
 Highlights
 - TUI: <key bindings or UX updates>
@@ -93,6 +103,7 @@ Changelog
 ```
 
 ## Verification checklist
+
 - npm:
   - `npm info next-prune version` shows the new version
   - `npx next-prune@latest --help` runs successfully
@@ -104,6 +115,7 @@ Changelog
   - Verify keys: Space select, D/Enter confirm, Y delete, N/Esc cancel, R rescan
 
 ## Troubleshooting
+
 - GitHub 401 when creating a release via CLI:
   - `gh auth login`
   - Re-run the `env -u GITHUB_TOKEN -u GH_TOKEN gh release create ...` command
@@ -115,6 +127,7 @@ Changelog
   - Tarballs are ignored by `.gitignore`. Use `artifacts/` for local packs (ignored).
 
 ## Conventions
+
 - Branch: release from `main`
 - Tags: `v<semver>` (e.g., `v1.0.2`)
 - Commit message for version bump: `Release v<version>: <summary>`

@@ -1,7 +1,6 @@
 import process from 'node:process';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-
 import React, {useState, useEffect, useMemo} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
 import {findNextCaches, getDirSize, FRAMES, human} from './scanner.js';
@@ -41,11 +40,11 @@ function useTerminalRows() {
 // Greedy pack segments into up to maxLines based on terminal width
 function packSegments(segments, cols, maxLines = 3) {
 	const sep = ' • ';
-	const prefixLen = 3; // approx width of '🎮 '
-	const max = Math.max(24, (cols || 80) - 6); // leave room for borders/padding
+	const prefixLen = 3; // Approx width of '🎮 '
+	const max = Math.max(24, (cols || 80) - 6); // Leave room for borders/padding
 	const lines = [];
 	let cur = [];
-	let curLen = prefixLen; // first line has a small prefix
+	let curLen = prefixLen; // First line has a small prefix
 	const pushLine = () => {
 		if (cur.length > 0) lines.push(cur);
 		cur = [];
@@ -59,6 +58,7 @@ function packSegments(segments, cols, maxLines = 3) {
 		if (!isLastLine && cur.length > 0 && curLen + addLen > max) {
 			pushLine();
 		}
+
 		cur.push(seg);
 		curLen += cur.length === 1 ? segText.length : addLen;
 	}
@@ -81,11 +81,12 @@ function packLabeledSegments(segments, cols, prefixLen = 0, maxLines = 3) {
 	};
 
 	for (const seg of segments) {
-		const segLen = seg.label.length + 1 + String(seg.value).length; // space before value
+		const segLen = seg.label.length + 1 + String(seg.value).length; // Space before value
 		const addLen = (cur.length === 0 ? 0 : sepLen) + segLen;
 		if (cur.length > 0 && curLen + addLen > max) {
 			pushLine();
 		}
+
 		cur.push(seg);
 		curLen += cur.length === 1 ? segLen : addLen;
 	}
@@ -133,6 +134,7 @@ export default function App({
 				{key: 'Q', label: 'quit'},
 			];
 		}
+
 		return [
 			{key: '↑↓', label: 'move'},
 			{key: 'Space', label: 'select'},
@@ -155,6 +157,7 @@ export default function App({
 				sum += typeof it.size === 'number' ? it.size : 0;
 			}
 		}
+
 		return sum;
 	}, [items]);
 
@@ -225,6 +228,7 @@ export default function App({
 				setConfirm(false);
 				return;
 			}
+
 			if (dryRun) {
 				setItems(prev =>
 					prev.map((it, i) =>
@@ -267,6 +271,7 @@ export default function App({
 					setError(`Failed to delete: ${p} (${error_?.message ?? error_})`);
 				}
 			}
+
 			// Mark successful deletions
 			if (successes.size > 0) {
 				setItems(prev =>
@@ -292,12 +297,15 @@ export default function App({
 				setConfirm(false);
 				return;
 			}
+
 			if (input?.toLowerCase() === 'y') {
 				performDeletion();
 				return;
 			}
+
 			return;
 		}
+
 		// Global Quit
 		if (
 			key.escape ||
@@ -314,46 +322,65 @@ export default function App({
 		} else if (key.downArrow) {
 			// Navigate Down
 			setIndex(i => Math.min(Math.max(0, items.length - 1), i + 1));
-		} else if (input === ' ') {
-			// Selection Toggle
-			setSelected(cur => {
-				const next = new Set(cur);
-				if (next.has(index)) next.delete(index);
-				else if (items[index]?.status !== 'deleted') next.add(index);
-				return next;
-			});
-		} else if (input === 'a') {
-			// Select All
-			setSelected(
-				new Set(
-					items.map((_, i) => i).filter(i => items[i]?.status !== 'deleted'),
-				),
-			);
-		} else if (input === 'c') {
-			// Clear Selection
-			setSelected(new Set());
-		} else if (input?.toLowerCase() === 'd' || key.return) {
-			// Open confirm; if none selected, select the focused item if allowed
-			if (selected.size > 0) {
-				setConfirm(true);
-			} else if (items[index]?.status !== 'deleted') {
-				setSelected(new Set([index]));
-				setConfirm(true);
+		} else
+			switch (input) {
+				case ' ': {
+					// Selection Toggle
+					setSelected(cur => {
+						const next = new Set(cur);
+						if (next.has(index)) next.delete(index);
+						else if (items[index]?.status !== 'deleted') next.add(index);
+						return next;
+					});
+
+					break;
+				}
+
+				case 'a': {
+					// Select All
+					setSelected(
+						new Set(
+							items
+								.map((_, i) => i)
+								.filter(i => items[i]?.status !== 'deleted'),
+						),
+					);
+
+					break;
+				}
+
+				case 'c': {
+					// Clear Selection
+					setSelected(new Set());
+
+					break;
+				}
+
+				default: {
+					if (input?.toLowerCase() === 'd' || key.return) {
+						// Open confirm; if none selected, select the focused item if allowed
+						if (selected.size > 0) {
+							setConfirm(true);
+						} else if (items[index]?.status !== 'deleted') {
+							setSelected(new Set([index]));
+							setConfirm(true);
+						}
+					} else if (input?.toLowerCase() === 'r' && !loading) {
+						// Rescan
+						doScan();
+					}
+				}
 			}
-		} else if (input?.toLowerCase() === 'r' && !loading) {
-			// Rescan
-			doScan();
-		}
 	});
 
 	// Viewport sizing to avoid terminal jumping on navigation
 	const {listBoxHeight, viewStart, viewEnd} = useMemo(() => {
-		const rootPad = 2; // root <Box padding={1}> adds 2 rows total
-		const titleHeight = 5; // round border + padding + 1 line
-		const scanHeight = 5 + packedScan.length; // single border + padding + header + lines
-		const errorHeight = error ? 5 : 0; // approx single-line error box
-		const footerHeight = showHelp ? 10 : 4 + packedLines.length; // help ~6 lines + borders/padding => 10; else compact footer
-		const confirmHeight = confirm ? 7 : 0; // confirm box ~3 lines + borders/padding
+		const rootPad = 2; // Root <Box padding={1}> adds 2 rows total
+		const titleHeight = 5; // Round border + padding + 1 line
+		const scanHeight = 5 + packedScan.length; // Single border + padding + header + lines
+		const errorHeight = error ? 5 : 0; // Approx single-line error box
+		const footerHeight = showHelp ? 10 : 4 + packedLines.length; // Help ~6 lines + borders/padding => 10; else compact footer
+		const confirmHeight = confirm ? 7 : 0; // Confirm box ~3 lines + borders/padding
 		const used =
 			rootPad +
 			titleHeight +
@@ -362,8 +389,8 @@ export default function App({
 			footerHeight +
 			confirmHeight;
 		const totalRows = rows || 24;
-		const boxHeight = Math.max(7, totalRows - used); // include list borders+padding
-		const inner = Math.max(3, boxHeight - 4); // subtract list border+padding
+		const boxHeight = Math.max(7, totalRows - used); // Include list borders+padding
+		const inner = Math.max(3, boxHeight - 4); // Subtract list border+padding
 
 		// Center the focused item within the visible window when possible
 		const half = Math.floor(inner / 2);
@@ -412,11 +439,14 @@ export default function App({
 				if (items[i]?.status === 'deleted') {
 					continue;
 				}
+
 				next.add(i);
 			}
+
 			if (next.size === cur.size) {
 				return cur;
 			}
+
 			return next;
 		});
 	}, [items]);
@@ -453,7 +483,7 @@ export default function App({
 				</Box>
 			</Box>
 
-			{error && (
+			{error ? (
 				<Box
 					borderStyle="single"
 					borderColor={error.startsWith('✅') ? 'green' : 'red'}
@@ -473,7 +503,7 @@ export default function App({
 						</>
 					)}
 				</Box>
-			)}
+			) : null}
 
 			<Box
 				flexDirection="column"
@@ -500,17 +530,34 @@ export default function App({
 
 						let statusColor = undefined;
 						let statusText = '';
-						if (it.status === 'deleted') {
-							// No inline indicator for deleted items; styling conveys state
-						} else if (it.status === 'error') {
-							statusColor = 'red';
-							statusText = ' ❌ error';
-						} else if (it.status === 'dry-run') {
-							statusColor = 'yellow';
-							statusText = ' 🔍 dry-run';
-						} else if (it.status === 'deleting') {
-							statusColor = 'blue';
-							statusText = ' 🗑️ deleting...';
+						switch (it.status) {
+							case 'deleted': {
+								// No inline indicator for deleted items; styling conveys state
+
+								break;
+							}
+
+							case 'error': {
+								statusColor = 'red';
+								statusText = ' ❌ error';
+
+								break;
+							}
+
+							case 'dry-run': {
+								statusColor = 'yellow';
+								statusText = ' 🔍 dry-run';
+
+								break;
+							}
+
+							case 'deleting': {
+								statusColor = 'blue';
+								statusText = ' 🗑️ deleting...';
+
+								break;
+							}
+							// No default
 						}
 
 						// Ensure single-line rendering to avoid terminal scroll jumps
@@ -528,8 +575,8 @@ export default function App({
 										it.status === 'deleted'
 											? 'gray'
 											: isFocus
-											? 'cyan'
-											: undefined
+												? 'cyan'
+												: undefined
 									}
 									backgroundColor={
 										isFocus && it.status !== 'deleted' ? 'blue' : undefined
@@ -540,7 +587,9 @@ export default function App({
 									{leftPart}
 									{displayRel}
 								</Text>
-								{statusText && <Text color={statusColor}>{statusText}</Text>}
+								{statusText ? (
+									<Text color={statusColor}>{statusText}</Text>
+								) : null}
 							</Box>
 						);
 					})
@@ -568,7 +617,7 @@ export default function App({
 									<Text color="cyan">PgUp/PgDn</Text>
 									<Text dimColor> page</Text>
 								</Text>
-								<Text></Text>
+								<Text />
 								<Text dimColor>Selection</Text>
 								<Text>
 									<Text color="cyan">Space</Text>
@@ -587,7 +636,7 @@ export default function App({
 									<Text color="cyan">R</Text>
 									<Text dimColor> rescan</Text>
 								</Text>
-								<Text></Text>
+								<Text />
 								<Text dimColor>App</Text>
 								<Text>
 									<Text color="cyan">H/?</Text>
@@ -616,7 +665,7 @@ export default function App({
 				)}
 			</Box>
 
-			{confirm && (
+			{confirm ? (
 				<Box
 					borderStyle="double"
 					borderColor="yellow"
@@ -645,7 +694,7 @@ export default function App({
 						<Text color="gray"> cancel</Text>
 					</Box>
 				</Box>
-			)}
+			) : null}
 		</Box>
 	);
 }
