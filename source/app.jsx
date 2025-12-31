@@ -3,26 +3,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import React, {useState, useEffect, useMemo} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
-import {
-	scanArtifacts,
-	getArtifactStats,
-	FRAMES,
-	human,
-	timeAgo,
-} from './scanner.js';
+import {scanArtifacts, getArtifactStats, human} from './scanner.js';
 import {findUnusedAssets} from './asset-scanner.js';
-
-// Scanner utilities are imported from ./scanner.js
-
-function useSpinner(active) {
-	const [i, setI] = useState(0);
-	useEffect(() => {
-		if (!active) return;
-		const t = setInterval(() => setI(x => (x + 1) % FRAMES.length), 80);
-		return () => clearInterval(t);
-	}, [active]);
-	return FRAMES[i];
-}
+import {Header} from './ui/header.js';
+import {Dashboard} from './ui/dashboard.js';
+import {Footer} from './ui/footer.js';
+import {ArtifactList} from './ui/artifact-list.js';
+import {ConfirmModal} from './ui/confirm-modal.js';
 
 function useTerminalCols() {
 	const [cols, setCols] = useState(process.stdout?.columns || 80);
@@ -44,74 +31,6 @@ function useTerminalRows() {
 	return rows;
 }
 
-// Greedy pack segments into up to maxLines based on terminal width
-function packSegments(segments, cols, maxLines = 3) {
-	const sep = ' • ';
-	const prefixLen = 3; // Approx width of '🎮 '
-	const max = Math.max(24, (cols || 80) - 6); // Leave room for borders/padding
-	const lines = [];
-	let cur = [];
-	let curLen = prefixLen; // First line has a small prefix
-	const pushLine = () => {
-		if (cur.length > 0) lines.push(cur);
-		cur = [];
-		curLen = 0;
-	};
-
-	for (const seg of segments) {
-		const segText = `${seg.key} ${seg.label}`;
-		const addLen = (cur.length === 0 ? 0 : sep.length) + segText.length;
-		const isLastLine = lines.length >= maxLines - 1;
-		if (!isLastLine && cur.length > 0 && curLen + addLen > max) {
-			pushLine();
-		}
-
-		cur.push(seg);
-		curLen += cur.length === 1 ? segText.length : addLen;
-	}
-
-	if (cur.length > 0) lines.push(cur);
-	return lines.slice(0, maxLines);
-}
-
-// Similar to packSegments but for {label, value} pairs
-function packLabeledSegments(segments, cols, prefixLen = 0, maxLines = 3) {
-	const sepLen = 3; // ' • '
-	const max = Math.max(24, (cols || 80) - 6);
-	const lines = [];
-	let cur = [];
-	let curLen = prefixLen;
-	const pushLine = () => {
-		if (cur.length > 0) lines.push(cur);
-		cur = [];
-		curLen = 0;
-	};
-
-	for (const seg of segments) {
-		const segLen = seg.label.length + 1 + String(seg.value).length; // Space before value
-		const addLen = (cur.length === 0 ? 0 : sepLen) + segLen;
-		if (cur.length > 0 && curLen + addLen > max) {
-			pushLine();
-		}
-
-		cur.push(seg);
-		curLen += cur.length === 1 ? segLen : addLen;
-	}
-
-	if (cur.length > 0) lines.push(cur);
-	return lines.slice(0, maxLines);
-}
-
-function truncateMiddle(text, max) {
-	if (!text) return '';
-	if (max <= 0) return '';
-	if (text.length <= max) return text;
-	if (max <= 1) return '…';
-	const head = Math.ceil((max - 1) / 2);
-	const tail = Math.floor((max - 1) / 2);
-	return text.slice(0, head) + '…' + text.slice(text.length - tail);
-}
-
 const DEFAULT_CONFIG = {
 	alwaysDelete: [],
 	neverDelete: [],
@@ -126,99 +45,69 @@ export default function App({
 	config = DEFAULT_CONFIG,
 }) {
 	const {exit} = useApp();
-	const [items, setItems] = useState([]); // {path, size, mtime, fileCount, status}
+	const [items, setItems] = useState([]);
 	const [loading, setLoading] = useState(!testMode);
-	const [selected, setSelected] = useState(new Set());
+	// selected is now a Set of paths (strings)
+	const [selectedPaths, setSelectedPaths] = useState(new Set());
 	const [index, setIndex] = useState(0);
+	const [sortBy, setSortBy] = useState('size'); // 'size' | 'age' | 'path'
 	const [confirm, setConfirm] = useState(false);
 	const [error, setError] = useState('');
-	const [showHelp, setShowHelp] = useState(false);
-	const spinner = useSpinner(loading);
+	// Removed unused showHelp
+
+	// Terminal dimensions
 	const cols = useTerminalCols();
 	const rows = useTerminalRows();
-	const hasSelection = selected.size > 0;
 
-	const footerSegments = useMemo(() => {
-		if (hasSelection) {
-			return [
-				{key: 'Space', label: 'toggle'},
-				{key: 'D/Enter', label: 'delete'},
-				{key: 'C', label: 'clear'},
-				{key: 'H', label: 'help'},
-				{key: 'Q', label: 'quit'},
-			];
-		}
+	// Derived sorted items
+	const sortedItems = useMemo(() => {
+		const slice = items.map(it => ({
+			...it,
+			relPath: path.relative(cwd, it.path) || '.',
+		}));
 
-		return [
-			{key: '↑↓', label: 'move'},
-			{key: 'Space', label: 'select'},
-			{key: 'A', label: 'all'},
-			{key: 'R', label: 'rescan'},
-			{key: 'H', label: 'help'},
-			{key: 'Q', label: 'quit'},
-		];
-	}, [hasSelection]);
-
-	const packedLines = useMemo(
-		() => packSegments(footerSegments, cols, 3),
-		[footerSegments, cols],
-	);
+		return slice.sort((a, b) => {
+			if (sortBy === 'size') return (b.size || 0) - (a.size || 0);
+			if (sortBy === 'age') return new Date(b.mtime) - new Date(a.mtime);
+			if (sortBy === 'path') return a.relPath.localeCompare(b.relPath);
+			return 0;
+		});
+	}, [items, sortBy, cwd]);
 
 	const totalSize = useMemo(() => {
-		let sum = 0;
-		for (const it of items) {
-			if (it.status !== 'deleted') {
-				sum += typeof it.size === 'number' ? it.size : 0;
-			}
-		}
-
-		return sum;
+		return items
+			.filter(it => it.status !== 'deleted')
+			.reduce((acc, it) => acc + (it.size || 0), 0);
 	}, [items]);
 
 	const selectedSize = useMemo(() => {
-		let sum = 0;
-		let idx = 0;
-		for (const it of items) {
-			if (selected.has(idx)) sum += typeof it.size === 'number' ? it.size : 0;
-			idx += 1;
+		return items
+			.filter(it => selectedPaths.has(it.path) && it.status !== 'deleted')
+			.reduce((acc, it) => acc + (it.size || 0), 0);
+	}, [items, selectedPaths]);
+
+	const foundCount = items.filter(it => it.status !== 'deleted').length;
+
+	// Viewport Logic
+	const listBoxHeight = Math.max(5, (rows || 24) - 12); // Approx height for list
+	const viewStart = useMemo(() => {
+		const half = Math.floor(listBoxHeight / 2);
+		let start = Math.max(0, index - half);
+		const end = start + listBoxHeight;
+		if (end > sortedItems.length) {
+			start = Math.max(0, sortedItems.length - listBoxHeight);
 		}
 
-		return sum;
-	}, [items, selected]);
+		return start;
+	}, [index, listBoxHeight, sortedItems.length]);
+	const viewEnd = Math.min(viewStart + listBoxHeight, sortedItems.length);
 
-	const foundCount = useMemo(
-		() => items.filter(it => it.status !== 'deleted').length,
-		[items],
-	);
-
-	const truncatedCwd = useMemo(() => {
-		const labelLen = 'Scan Directory:'.length;
-		const max = Math.max(10, (cols || 80) - labelLen - 6);
-		return truncateMiddle(cwd, max);
-	}, [cwd, cols]);
-
-	const scanSegments = useMemo(() => {
-		const segs = [
-			{label: 'Found:', value: `${foundCount} items`},
-			{label: 'Total Size:', value: human(totalSize)},
-			{label: 'Selected:', value: `${selected.size} (${human(selectedSize)})`},
-		];
-		if (loading) segs.push({label: 'Status:', value: `${spinner} scanning...`});
-		return segs;
-	}, [foundCount, totalSize, selected.size, selectedSize, loading, spinner]);
-	const packedScan = useMemo(
-		() => packLabeledSegments(scanSegments, cols, 0, 3),
-		[scanSegments, cols],
-	);
-
-	// Trigger a (re)scan
+	// Handlers
 	const doScan = async () => {
 		setLoading(true);
 		setError('');
 		try {
-			// Updated to use scanArtifacts which does stats internally
 			let nextItems = await scanArtifacts(cwd);
-
 			if (config.checkUnusedAssets) {
 				const assetPaths = await findUnusedAssets(cwd);
 				const assetStats = await Promise.all(
@@ -227,14 +116,12 @@ export default function App({
 				const assetItems = assetPaths.map((p, i) => ({
 					path: p,
 					...assetStats[i],
-					type: 'asset', // Marker for UI
+					type: 'asset',
 				}));
 				nextItems = [...nextItems, ...assetItems];
-				// Re-sort by size
-				nextItems.sort((a, b) => b.size - a.size);
 			}
 
-			// Filter out neverDelete items
+			// Filter neverDelete
 			if (config.neverDelete?.length > 0) {
 				nextItems = nextItems.filter(it => {
 					const rel = path.relative(cwd, it.path);
@@ -245,9 +132,7 @@ export default function App({
 			}
 
 			setItems(nextItems);
-			// Reset UI focus/help after a fresh scan
 			setIndex(0);
-			setShowHelp(false);
 		} catch (error_) {
 			setError(String(error_?.message ?? error_));
 		} finally {
@@ -255,523 +140,238 @@ export default function App({
 		}
 	};
 
-	// Deletion handler: performs dry-run or actual deletion for selected items
 	const performDeletion = async () => {
 		try {
-			const selectedIndices = [...selected].filter(
-				i => items[i]?.status !== 'deleted',
-			);
-			if (selectedIndices.length === 0) {
+			const pathsToDelete = [...selectedPaths].filter(p => {
+				const it = items.find(x => x.path === p);
+				return it && it.status !== 'deleted';
+			});
+
+			if (pathsToDelete.length === 0) {
 				setConfirm(false);
 				return;
 			}
 
 			if (dryRun) {
 				setItems(prev =>
-					prev.map((it, i) =>
-						selectedIndices.includes(i) ? {...it, status: 'dry-run'} : it,
+					prev.map(it =>
+						pathsToDelete.includes(it.path) ? {...it, status: 'dry-run'} : it,
 					),
 				);
 				setError(
 					`✅ Dry-run: would delete ${
-						selectedIndices.length
+						pathsToDelete.length
 					} items (${human(selectedSize)})`,
 				);
-				setSelected(new Set());
+				setSelectedPaths(new Set());
 				setConfirm(false);
 				return;
 			}
 
-			// Mark as deleting
+			// Mark deleting
 			setItems(prev =>
-				prev.map((it, i) =>
-					selectedIndices.includes(i) ? {...it, status: 'deleting'} : it,
+				prev.map(it =>
+					pathsToDelete.includes(it.path) ? {...it, status: 'deleting'} : it,
 				),
 			);
-			const snapshot = items;
+
 			let freed = 0;
 			const successes = new Set();
-			for (const i of selectedIndices) {
-				const p = snapshot[i]?.path;
+
+			for (const p of pathsToDelete) {
 				try {
-					if (p) {
-						await fs.rm(p, {recursive: true, force: true});
-						successes.add(i);
-						const s = snapshot[i]?.size;
-						freed += typeof s === 'number' ? s : 0;
-					}
-				} catch (error_) {
-					// Mark error for this item
+					await fs.rm(p, {recursive: true, force: true});
+					successes.add(p);
+					const it = items.find(x => x.path === p);
+					if (it) freed += it.size || 0;
+				} catch {
 					setItems(prev =>
-						prev.map((it, j) => (j === i ? {...it, status: 'error'} : it)),
+						prev.map(it => (it.path === p ? {...it, status: 'error'} : it)),
 					);
-					setError(`Failed to delete: ${p} (${error_?.message ?? error_})`);
+					setError(`Failed to delete: ${p}`);
 				}
 			}
 
-			// Mark successful deletions
+			// Mark deleted
 			if (successes.size > 0) {
 				setItems(prev =>
-					prev.map((it, i) =>
-						successes.has(i) ? {...it, status: 'deleted', size: 0} : it,
+					prev.map(it =>
+						successes.has(it.path) ? {...it, status: 'deleted', size: 0} : it,
 					),
 				);
 				setError(`✅ Deleted ${successes.size} items (freed ${human(freed)})`);
 			}
 		} finally {
-			setSelected(new Set());
+			setSelectedPaths(new Set());
 			setConfirm(false);
 		}
 	};
 
-	// Basic input handling keeps stdin listener active so the app doesn't exit after scanning
 	useInput((input, key) => {
-		// Handle confirmation modal first
 		if (confirm) {
-			if (key.escape || input?.toLowerCase() === 'n') {
-				setConfirm(false);
-				return;
-			}
-
-			if (input?.toLowerCase() === 'y') {
-				performDeletion();
-				return;
-			}
-
+			if (key.escape || input?.toLowerCase() === 'n') setConfirm(false);
+			if (input?.toLowerCase() === 'y' || key.return) performDeletion();
 			return;
 		}
 
-		// Global Quit
-		if (
-			key.escape ||
-			input?.toLowerCase() === 'q' ||
-			(input === 'c' && key.ctrl)
-		) {
-			exit();
-		} else if (input === 'h' || input === '?') {
-			// Toggle Help
-			setShowHelp(v => !v);
-		} else if (key.upArrow) {
-			// Navigate Up
-			setIndex(i => Math.max(0, i - 1));
-		} else if (key.downArrow) {
-			// Navigate Down
-			setIndex(i => Math.min(Math.max(0, items.length - 1), i + 1));
-		} else
-			switch (input) {
-				case ' ': {
-					// Selection Toggle
-					setSelected(cur => {
-						const next = new Set(cur);
-						if (next.has(index)) next.delete(index);
-						else if (items[index]?.status !== 'deleted') next.add(index);
-						return next;
-					});
+		if (key.escape || input?.toLowerCase() === 'q') exit();
 
-					break;
-				}
+		if (key.upArrow) setIndex(Math.max(0, index - 1));
+		if (key.downArrow) setIndex(Math.min(sortedItems.length - 1, index + 1));
 
-				case 'a': {
-					// Select All
-					setSelected(
-						new Set(
-							items
-								.map((_, i) => i)
-								.filter(i => items[i]?.status !== 'deleted'),
-						),
-					);
+		// Page navigation
+		if (key.pageUp) setIndex(Math.max(0, index - listBoxHeight));
+		if (key.pageDown)
+			setIndex(Math.min(sortedItems.length - 1, index + listBoxHeight));
+		if (key.home) setIndex(0);
+		if (key.end) setIndex(sortedItems.length - 1);
 
-					break;
-				}
-
-				case 'c': {
-					// Clear Selection
-					setSelected(new Set());
-
-					break;
-				}
-
-				default: {
-					if (input?.toLowerCase() === 'd' || key.return) {
-						// Open confirm; if none selected, select the focused item if allowed
-						if (selected.size > 0) {
-							setConfirm(true);
-						} else if (items[index]?.status !== 'deleted') {
-							setSelected(new Set([index]));
-							setConfirm(true);
-						}
-					} else if (input?.toLowerCase() === 'r' && !loading) {
-						// Rescan
-						doScan();
-					}
-				}
+		if (input === ' ') {
+			const currentPath = sortedItems[index]?.path;
+			if (currentPath && sortedItems[index].status !== 'deleted') {
+				setSelectedPaths(prev => {
+					const next = new Set(prev);
+					if (next.has(currentPath)) next.delete(currentPath);
+					else next.add(currentPath);
+					return next;
+				});
 			}
-	});
-
-	// Viewport sizing to avoid terminal jumping on navigation
-	const {listBoxHeight, viewStart, viewEnd} = useMemo(() => {
-		const rootPad = 2; // Root <Box padding={1}> adds 2 rows total
-		const titleHeight = 5; // Round border + padding + 1 line
-		const scanHeight = 5 + packedScan.length; // Single border + padding + header + lines
-		const errorHeight = error ? 5 : 0; // Approx single-line error box
-		const footerHeight = showHelp ? 10 : 4 + packedLines.length; // Help ~6 lines + borders/padding => 10; else compact footer
-		const confirmHeight = confirm ? 7 : 0; // Confirm box ~3 lines + borders/padding
-		const used =
-			rootPad +
-			titleHeight +
-			scanHeight +
-			errorHeight +
-			footerHeight +
-			confirmHeight;
-		const totalRows = rows || 24;
-		const boxHeight = Math.max(7, totalRows - used); // Include list borders+padding
-		const inner = Math.max(3, boxHeight - 4); // Subtract list border+padding
-
-		// Center the focused item within the visible window when possible
-		const half = Math.floor(inner / 2);
-		let start = Math.max(0, index - half);
-		let end = start + inner;
-		if (end > items.length) {
-			end = items.length;
-			start = Math.max(0, end - inner);
 		}
 
-		return {
-			listBoxHeight: boxHeight,
-			viewStart: start,
-			viewEnd: end,
-		};
-	}, [
-		rows,
-		packedScan.length,
-		error,
-		showHelp,
-		packedLines.length,
-		confirm,
-		index,
-		items.length,
-	]);
+		if (input?.toLowerCase() === 'a') {
+			const allPaths = sortedItems
+				.filter(it => it.status !== 'deleted')
+				.map(it => it.path);
+			setSelectedPaths(new Set(allPaths));
+		}
 
+		if (input?.toLowerCase() === 'c') setSelectedPaths(new Set());
+		if (input?.toLowerCase() === 'r' && !loading) doScan();
+
+		if (input?.toLowerCase() === 's') {
+			const modes = ['size', 'age', 'path'];
+			const next = modes[(modes.indexOf(sortBy) + 1) % modes.length];
+			setSortBy(next);
+		}
+
+		if (input?.toLowerCase() === 'd' || key.return) {
+			if (selectedPaths.size > 0) {
+				setConfirm(true);
+			} else if (sortedItems[index]?.status !== 'deleted') {
+				// Select current if none selected
+				const p = sortedItems[index]?.path;
+				if (p) {
+					setSelectedPaths(new Set([p]));
+					setConfirm(true);
+				}
+			}
+		}
+	});
+
+	// Initial scan
 	useEffect(() => {
-		if (testMode) return;
-		doScan();
+		if (!testMode) doScan();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [cwd, testMode]);
 
+	// Auto-select based on config
 	useEffect(() => {
-		if (items.length === 0) return;
-		if (testMode) return;
+		if (items.length === 0 || testMode) return;
 
-		// 1. If confirmImmediately is set, select all and confirm
 		if (confirmImmediately) {
-			setSelected(new Set(items.map((_, i) => i)));
+			const all = items.map(it => it.path);
+			setSelectedPaths(new Set(all));
 			setConfirm(true);
 			return;
 		}
 
-		// 2. Otherwise, check config.alwaysDelete
 		if (config.alwaysDelete?.length > 0) {
-			const preSelected = new Set();
-			for (const [i, it] of items.entries()) {
+			const pre = new Set();
+			for (const it of items) {
 				const rel = path.relative(cwd, it.path);
-				const shouldSelect = config.alwaysDelete.some(
-					pattern => rel === pattern || rel.startsWith(pattern + path.sep),
+				const hit = config.alwaysDelete.some(
+					p => rel === p || rel.startsWith(p + path.sep),
 				);
-				if (shouldSelect && it.status !== 'deleted') {
-					preSelected.add(i);
-				}
+				if (hit && it.status !== 'deleted') pre.add(it.path);
 			}
 
-			if (preSelected.size > 0) {
-				setSelected(preSelected);
-			}
+			if (pre.size > 0) setSelectedPaths(pre);
 		}
-	}, [confirmImmediately, items, testMode, config.alwaysDelete, cwd]);
+	}, [confirmImmediately, items, config.alwaysDelete, cwd, testMode]);
 
-	// Auto-deselect deleted items
-	useEffect(() => {
-		setSelected(cur => {
-			const next = new Set();
-			for (const i of cur) {
-				if (items[i]?.status === 'deleted') {
-					continue;
-				}
-
-				next.add(i);
-			}
-
-			if (next.size === cur.size) {
-				return cur;
-			}
-
-			return next;
-		});
-	}, [items]);
+	const shortcuts = [
+		[
+			{key: '↑↓', label: 'move'},
+			{key: 'Space', label: 'select'},
+			{key: 'A', label: 'all'},
+		],
+		[
+			{key: 'S', label: `sort (${sortBy})`},
+			{key: 'D/Enter', label: 'delete'},
+			{key: 'Q', label: 'quit'},
+		],
+	];
 
 	return (
-		<Box flexDirection="column" padding={1}>
-			<Box borderStyle="round" borderColor="green" padding={1} marginBottom={1}>
-				<Text color="green" bold>
-					🌿 Next Prune
-				</Text>
+		<Box flexDirection="column" padding={1} height={rows} width={cols}>
+			<Header />
+
+			<Box marginTop={1} marginBottom={1}>
+				<Dashboard
+					foundCount={foundCount}
+					totalSize={totalSize}
+					selectedCount={selectedPaths.size}
+					selectedSize={selectedSize}
+					loading={loading}
+					cwd={cwd}
+				/>
 			</Box>
 
-			<Box borderStyle="single" borderColor="gray" padding={1} marginBottom={1}>
-				<Box flexDirection="column">
-					<Box>
-						<Text color="cyan">Scan Directory:</Text>
-						<Text> {truncatedCwd}</Text>
-					</Box>
-					<Box marginTop={1} flexDirection="column">
-						{packedScan.map((line, li) => (
-							<Box key={li}>
-								{line.map((seg, si) => (
-									<React.Fragment key={si}>
-										<Text color={seg.label === 'Status:' ? 'blue' : 'yellow'}>
-											{seg.label}
-										</Text>
-										<Text> {seg.value}</Text>
-										{si < line.length - 1 && <Text> • </Text>}
-									</React.Fragment>
-								))}
-							</Box>
-						))}
-					</Box>
-				</Box>
-			</Box>
-
-			{error ? (
-				<Box
-					borderStyle="single"
-					borderColor={error.startsWith('✅') ? 'green' : 'red'}
-					padding={1}
-					marginBottom={1}
-				>
-					{error.startsWith('✅') ? (
-						<Text color="green" bold>
-							{error}
-						</Text>
-					) : (
-						<>
-							<Text color="red" bold>
-								❌ Error:{' '}
-							</Text>
-							<Text color="red">{error}</Text>
-						</>
-					)}
-				</Box>
-			) : null}
-
+			{/* Main Content Area */}
 			<Box
+				flexGrow={1}
+				borderStyle="round"
+				borderColor={selectedPaths.size > 0 ? 'yellow' : 'gray'}
+				paddingX={1}
 				flexDirection="column"
-				borderStyle="single"
-				padding={1}
-				height={listBoxHeight}
 			>
-				{items.length === 0 && !loading ? (
-					<Box justifyContent="center" alignItems="center" minHeight={5}>
-						<Text color="green">
-							✅ No build artifacts found - your project is clean!
-						</Text>
-					</Box>
-				) : (
-					items.slice(viewStart, viewEnd).map((it, offset) => {
-						const i = viewStart + offset;
-						const rel = path.relative(cwd, it.path) || '.';
-						const isSel = selected.has(i);
-						const isFocus = i === index;
-						const prefix = isFocus ? '>' : ' ';
-						const mark = isSel ? '[x]' : '[ ]';
-						const sizeText =
-							it.size === undefined || it.size === null ? '…' : human(it.size);
-						const timeText = timeAgo(it.mtime);
-
-						let statusColor = undefined;
-						let statusText = '';
-						switch (it.status) {
-							case 'deleted': {
-								// No inline indicator for deleted items; styling conveys state
-
-								break;
-							}
-
-							case 'error': {
-								statusColor = 'red';
-								statusText = ' ❌ error';
-
-								break;
-							}
-
-							case 'dry-run': {
-								statusColor = 'yellow';
-								statusText = ' 🔍 dry-run';
-
-								break;
-							}
-
-							case 'deleting': {
-								statusColor = 'blue';
-								statusText = ' 🗑️ deleting...';
-
-								break;
-							}
-							// No default
-						}
-
-						// Ensure single-line rendering to avoid terminal scroll jumps
-						const containerWidth = Math.max(24, (cols || 80) - 6);
-						const leftPart = `${prefix} ${mark} ${sizeText.padStart(7)} `;
-						const metaPart = ` ${timeText.padEnd(8)} `;
-
-						// Add icon based on type/directory
-						// const icon = it.isDirectory === false ? '📄' : '📁';
-
-						const reserved =
-							leftPart.length +
-							metaPart.length +
-							(statusText ? statusText.length : 0);
-						// Adjusted maxRel calculation to account for icon and warning
-						const maxRel = Math.max(3, containerWidth - reserved - 4);
-
-						return (
-							<Box key={it.path}>
-								<Text
-									color={
-										it.status === 'deleted'
-											? 'gray'
-											: isFocus
-												? 'cyan'
-												: undefined
-									}
-									backgroundColor={
-										isFocus && it.status !== 'deleted' ? 'blue' : undefined
-									}
-									dimColor={it.status === 'deleted'}
-									strikethrough={it.status === 'deleted'}
-								>
-									{leftPart}
-									<Text
-										dimColor={it.status === 'deleted'}
-										color={it.status === 'deleted' ? 'gray' : 'yellow'}
-									>
-										{metaPart}
-									</Text>
-									{it.type === 'asset' ? <Text color="yellow">⚠️ </Text> : null}
-									{it.isDirectory === false ? (
-										<Text>📄 </Text>
-									) : (
-										<Text>📁 </Text>
-									)}
-									{truncateMiddle(rel, maxRel)}
-								</Text>
-								{statusText ? (
-									<Text color={statusColor}>{statusText}</Text>
-								) : null}
-							</Box>
-						);
-					})
-				)}
-			</Box>
-
-			<Box borderStyle="single" borderColor="gray" padding={1} marginTop={1}>
-				{showHelp ? (
-					<Box flexDirection="column">
-						<Box>
-							<Text color="cyan" bold>
-								📖 Help
-							</Text>
-							<Text> </Text>
-							<Text dimColor>(Esc to close)</Text>
-						</Box>
-						<Box>
-							<Box flexDirection="column" marginRight={2}>
-								<Text dimColor>Navigation</Text>
-								<Text>
-									<Text color="cyan">↑↓</Text>
-									<Text dimColor> move • </Text>
-									<Text color="cyan">Home/End</Text>
-									<Text dimColor> jump • </Text>
-									<Text color="cyan">PgUp/PgDn</Text>
-									<Text dimColor> page</Text>
-								</Text>
-								<Text />
-								<Text dimColor>Selection</Text>
-								<Text>
-									<Text color="cyan">Space</Text>
-									<Text dimColor> select • </Text>
-									<Text color="cyan">A</Text>
-									<Text dimColor> all • </Text>
-									<Text color="cyan">C</Text>
-									<Text dimColor> clear</Text>
-								</Text>
-							</Box>
-							<Box flexDirection="column">
-								<Text dimColor>Actions</Text>
-								<Text>
-									<Text color="cyan">D/Enter</Text>
-									<Text dimColor> delete • </Text>
-									<Text color="cyan">R</Text>
-									<Text dimColor> rescan</Text>
-								</Text>
-								<Text />
-								<Text dimColor>App</Text>
-								<Text>
-									<Text color="cyan">H/?</Text>
-									<Text dimColor> help • </Text>
-									<Text color="cyan">Q</Text>
-									<Text dimColor> quit</Text>
-								</Text>
-							</Box>
-						</Box>
-					</Box>
-				) : (
-					<Box flexDirection="column">
-						{packedLines.map((line, li) => (
-							<Box key={li}>
-								{li === 0 && <Text dimColor>🎮 </Text>}
-								{line.map((seg, si) => (
-									<React.Fragment key={si}>
-										<Text color="cyan">{seg.key}</Text>
-										<Text dimColor> {seg.label}</Text>
-										{si < line.length - 1 && <Text dimColor> • </Text>}
-									</React.Fragment>
-								))}
-							</Box>
-						))}
+				{Boolean(error) && (
+					<Box borderStyle="single" borderColor="red" marginBottom={1}>
+						<Text color="red">{error}</Text>
 					</Box>
 				)}
+
+				<ArtifactList
+					items={sortedItems}
+					selectedIndex={index}
+					selectedIds={
+						new Set(
+							[...selectedPaths]
+								.map(p => {
+									// Map path back to current sorted index for display
+									return sortedItems.findIndex(it => it.path === p);
+								})
+								.filter(i => i !== -1),
+						)
+					}
+					viewStart={viewStart}
+					viewEnd={viewEnd}
+					cwd={cwd}
+					height={listBoxHeight}
+				/>
 			</Box>
 
-			{confirm ? (
-				<Box
-					borderStyle="double"
-					borderColor="yellow"
-					padding={1}
-					marginTop={1}
-				>
-					<Text color="yellow" bold>
-						⚠️ Confirm Deletion
-					</Text>
-					<Text>
-						Delete {selected.size} directories ({human(selectedSize)})
-						{dryRun ? ' [dry-run mode]' : ''}?
-					</Text>
-					<Box marginTop={1}>
-						<Text color="green" bold>
-							[Y]es
-						</Text>
-						<Text> • </Text>
-						<Text color="red" bold>
-							[N]o
-						</Text>
-						<Text> • </Text>
-						<Text color="gray" bold>
-							Esc
-						</Text>
-						<Text color="gray"> cancel</Text>
-					</Box>
-				</Box>
-			) : null}
+			<Box marginTop={0}>
+				<Footer shortcuts={shortcuts} />
+			</Box>
+
+			{Boolean(confirm) && (
+				<ConfirmModal
+					count={selectedPaths.size}
+					size={selectedSize}
+					dryRun={dryRun}
+				/>
+			)}
 		</Box>
 	);
 }
