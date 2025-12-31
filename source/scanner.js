@@ -1,5 +1,10 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import os from 'node:os';
+
+const execFileAsync = promisify(execFile);
 
 export const FRAMES = Object.freeze([
 	'⠋',
@@ -15,30 +20,23 @@ export const FRAMES = Object.freeze([
 ]);
 
 // Patterns for Next.js and related build artifacts/caches
-// Includes files (logs) and directories
-const ARTIFACT_PATTERNS = [
-	'.next', // Next.js build output
-	'out', // Next.js static export
-	'.vercel/output', // Vercel output
-	'.turbo', // Turborepo cache
-	'.vercel_build_output', // Legacy Vercel
-	'node_modules/.cache/next', // Next.js cache
-	'node_modules/.cache/turbopack', // Turbopack cache
-	'coverage', // Test coverage
-	'.swc', // SWC cache
-	'.docusaurus', // Docusaurus cache
-	'storybook-static', // Storybook build
-	'npm-debug.log',
-	'yarn-error.log',
-	'pnpm-debug.log',
-];
+const ARTIFACT_NAMES = new Set([
+	'.next',
+	'out',
+	'.turbo',
+	'.vercel_build_output',
+	'coverage',
+	'.swc',
+	'.docusaurus',
+	'storybook-static',
+]);
 
-// Directories to skip during recursive scan to avoid performance hits
+// Directories to skip walking into
 const SKIP_DIRS = new Set([
 	'.git',
 	'node_modules',
 	'dist',
-	'build', // careful: some projects use build as output, but often it's source
+	'build',
 	'.next',
 	'.turbo',
 	'.vercel',
@@ -73,83 +71,63 @@ export const timeAgo = date => {
 	return Math.floor(seconds) + 's ago';
 };
 
-export const pathExists = async p => {
+const getNativeSize = async p => {
+	if (os.platform() === 'win32') return null;
 	try {
-		await fs.stat(p);
-		return true;
+		// du -sk returns size in 1024-byte blocks
+		const {stdout} = await execFileAsync('du', ['-sk', p]);
+		const match = /^(\d+)\s/.exec(stdout);
+		if (match && match[1]) {
+			return Number.parseInt(match[1], 10) * 1024;
+		}
+
+		return null;
 	} catch {
-		return false;
+		return null;
 	}
 };
 
-// Recursively walk directories, yielding subdirectories
-export async function* walk(root) {
-	let entries = [];
-	try {
-		entries = await fs.readdir(root, {withFileTypes: true});
-	} catch {
-		return;
-	}
+const getRecursiveStatsNode = async p => {
+	let totalSize = 0;
+	let fileCount = 0;
+	let latestMtime = new Date(0);
 
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		if (SKIP_DIRS.has(entry.name)) continue;
+	const queue = [p];
 
-		const full = path.join(root, entry.name);
-		yield full;
-		yield* walk(full);
-	}
-}
+	// Use a limited concurrency pool for readdir/lstat
+	// Since we are recursive, we'll process the queue in chunks
+	while (queue.length > 0) {
+		const target = queue.pop();
+		try {
+			const stat = await fs.lstat(target);
+			if (stat.mtime > latestMtime) latestMtime = stat.mtime;
 
-export const findArtifacts = async cwd => {
-	const results = new Set();
-
-	// Helper to check a specific directory for patterns
-	const checkDir = async dir => {
-		for (const pattern of ARTIFACT_PATTERNS) {
-			// Handle deep patterns like node_modules/.cache/next separately
-			if (pattern.includes(path.sep) || pattern.includes('/')) continue;
-
-			const fullPath = path.join(dir, pattern);
-			if (await pathExists(fullPath)) {
-				results.add(fullPath);
+			if (stat.isDirectory()) {
+				const entries = await fs.readdir(target, {withFileTypes: true});
+				for (const entry of entries) {
+					queue.push(path.join(target, entry.name));
+				}
+			} else {
+				totalSize += stat.size;
+				fileCount++;
 			}
+		} catch {
+			// Ignore access errors
 		}
+	}
+
+	return {
+		size: totalSize,
+		mtime: latestMtime,
+		fileCount,
+		isDirectory: true,
 	};
-
-	// Check root
-	await checkDir(cwd);
-
-	// Check specific nested known locations in root
-	const nestedCandidates = [
-		path.join(cwd, '.vercel/output'),
-		path.join(cwd, 'node_modules/.cache/next'),
-		path.join(cwd, 'node_modules/.cache/turbopack'),
-	];
-	for (const cand of nestedCandidates) {
-		if (await pathExists(cand)) results.add(cand);
-	}
-
-	// Walk subdirectories (monorepo support / nested projects)
-	for await (const dir of walk(cwd)) {
-		await checkDir(dir);
-		// Check nested in this subdir
-		const nestedSub = [
-			path.join(dir, '.vercel/output'),
-			path.join(dir, 'node_modules/.cache/next'),
-			path.join(dir, 'node_modules/.cache/turbopack'),
-		];
-		for (const cand of nestedSub) {
-			if (await pathExists(cand)) results.add(cand);
-		}
-	}
-
-	return [...results];
 };
 
 export const getArtifactStats = async p => {
 	try {
 		const stat = await fs.lstat(p);
+		// If it's a file, just return stats
 		if (!stat.isDirectory()) {
 			return {
 				size: stat.size,
@@ -159,72 +137,102 @@ export const getArtifactStats = async p => {
 			};
 		}
 
-		let totalSize = 0;
-		let fileCount = 0;
-		let latestMtime = stat.mtime;
+		// Try native du first for speed
+		const nativeSize = await getNativeSize(p);
+		if (nativeSize !== null) {
+			return {
+				size: nativeSize,
+				mtime: stat.mtime, // Approximate mtime of root folder
+				fileCount: 0, // We skip counting files for speed if using du
+				isDirectory: true,
+			};
+		}
 
-		const processDir = async d => {
-			let entries = [];
-			try {
-				entries = await fs.readdir(d, {withFileTypes: true});
-			} catch {
-				return;
-			}
-
-			const files = [];
-			const dirs = [];
-
-			for (const entry of entries) {
-				const full = path.join(d, entry.name);
-				if (entry.isDirectory()) {
-					dirs.push(full);
-				} else {
-					files.push(full);
-				}
-			}
-
-			// Process files in this dir
-			const fileStats = await Promise.all(
-				files.map(async f => {
-					try {
-						return await fs.lstat(f);
-					} catch {
-						return undefined;
-					}
-				}),
-			);
-
-			for (const s of fileStats) {
-				if (!s) continue;
-				totalSize += s.size;
-				fileCount++;
-				if (s.mtime > latestMtime) latestMtime = s.mtime;
-			}
-
-			// Recurse
-			await Promise.all(dirs.map(sub => processDir(sub)));
-		};
-
-		await processDir(p);
-		return {
-			size: totalSize,
-			mtime: latestMtime,
-			fileCount,
-			isDirectory: true,
-		};
+		// Fallback to node
+		return await getRecursiveStatsNode(p);
 	} catch {
 		return {size: 0, mtime: new Date(), fileCount: 0, isDirectory: false};
 	}
 };
 
 export const scanArtifacts = async cwd => {
-	const paths = await findArtifacts(cwd);
-	const stats = await Promise.all(paths.map(p => getArtifactStats(p)));
-	const items = paths.map((path_, index) => ({
-		path: path_,
-		...stats[index],
-	}));
+	const results = new Set();
+	const queue = [cwd];
+	const processed = new Set();
 
-	// Sort by size (descending)
-	return items.sort((a, b) => b.size - a.size);
+	// BFS Walker
+	while (queue.length > 0) {
+		const dir = queue.shift();
+		if (processed.has(dir)) continue;
+		processed.add(dir);
+
+		try {
+			const entries = await fs.readdir(dir, {withFileTypes: true});
+			const nextDirs = [];
+
+			for (const entry of entries) {
+				const full = path.join(dir, entry.name);
+
+				if (entry.isDirectory()) {
+					// Check direct matches
+					if (ARTIFACT_NAMES.has(entry.name)) {
+						results.add(full);
+						// Don't traverse inside an artifact we already found
+						continue;
+					}
+
+					// Check nested (deep) artifacts
+					// This optimization avoids traversing deep into node_modules unless necessary
+					// Logic: If dir is 'node_modules', we only look for '.cache'
+					if (entry.name === 'node_modules') {
+						const cachePath = path.join(full, '.cache');
+						// Quickly check if .cache exists without fully walking node_modules
+						try {
+							const cacheStat = await fs.stat(cachePath);
+							if (cacheStat.isDirectory()) {
+								const cacheEntries = await fs.readdir(cachePath);
+								if (cacheEntries.includes('next'))
+									results.add(path.join(cachePath, 'next'));
+								if (cacheEntries.includes('turbopack'))
+									results.add(path.join(cachePath, 'turbopack'));
+							}
+						} catch {
+							// ignore
+						}
+					} else if (entry.name === '.vercel') {
+						const outPath = path.join(full, 'output');
+						try {
+							const outStat = await fs.stat(outPath);
+							if (outStat.isDirectory()) {
+								results.add(outPath);
+							}
+						} catch {
+							// ignore
+						}
+					}
+
+					// Should we recurse?
+					if (!SKIP_DIRS.has(entry.name)) {
+						nextDirs.push(full);
+					}
+				}
+			}
+
+			// Add next dirs to queue
+			for (const d of nextDirs) queue.push(d);
+		} catch {
+			// ignore access errors
+		}
+	}
+
+	// Calculate stats in parallel with a concurrency limit
+	const paths = [...results];
+	const stats = await Promise.all(
+		paths.map(async p => {
+			const s = await getArtifactStats(p);
+			return {path: p, ...s};
+		}),
+	);
+
+	return stats.sort((a, b) => b.size - a.size);
 };
