@@ -3,7 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import React, {useState, useEffect, useMemo} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
-import {findNextCaches, getDirSize, FRAMES, human} from './scanner.js';
+import {scanArtifacts, getArtifactStats, FRAMES, human, timeAgo} from './scanner.js';
+import {findUnusedAssets} from './asset-scanner.js';
 
 // Scanner utilities are imported from ./scanner.js
 
@@ -110,9 +111,10 @@ export default function App({
 	dryRun = false,
 	confirmImmediately = false,
 	testMode = false,
+	config = {alwaysDelete: [], neverDelete: [], checkUnusedAssets: false},
 }) {
 	const {exit} = useApp();
-	const [items, setItems] = useState([]); // {path, size, status}
+	const [items, setItems] = useState([]); // {path, size, mtime, fileCount, status}
 	const [loading, setLoading] = useState(!testMode);
 	const [selected, setSelected] = useState(new Set());
 	const [index, setIndex] = useState(0);
@@ -185,7 +187,7 @@ export default function App({
 
 	const scanSegments = useMemo(() => {
 		const segs = [
-			{label: 'Found:', value: `${foundCount} directories`},
+			{label: 'Found:', value: `${foundCount} items`},
 			{label: 'Total Size:', value: human(totalSize)},
 			{label: 'Selected:', value: `${selected.size} (${human(selectedSize)})`},
 		];
@@ -202,11 +204,34 @@ export default function App({
 		setLoading(true);
 		setError('');
 		try {
-			const paths = await findNextCaches(cwd);
-			const sizes = await Promise.all(paths.map(p => getDirSize(p)));
-			const nextItems = [];
-			for (let i = 0; i < paths.length; i += 1)
-				nextItems.push({path: paths[i], size: sizes[i]});
+			// Updated to use scanArtifacts which does stats internally
+			let nextItems = await scanArtifacts(cwd);
+
+			if (config.checkUnusedAssets) {
+				const assetPaths = await findUnusedAssets(cwd);
+				const assetStats = await Promise.all(
+					assetPaths.map(p => getArtifactStats(p)),
+				);
+				const assetItems = assetPaths.map((p, i) => ({
+					path: p,
+					...assetStats[i],
+					type: 'asset', // Marker for UI
+				}));
+				nextItems = [...nextItems, ...assetItems];
+				// Re-sort by size
+				nextItems.sort((a, b) => b.size - a.size);
+			}
+
+			// Filter out neverDelete items
+			if (config.neverDelete?.length > 0) {
+				nextItems = nextItems.filter(it => {
+					const rel = path.relative(cwd, it.path);
+					return !config.neverDelete.some(pattern =>
+						rel === pattern || rel.startsWith(pattern + path.sep),
+					);
+				});
+			}
+
 			setItems(nextItems);
 			// Reset UI focus/help after a fresh scan
 			setIndex(0);
@@ -238,7 +263,7 @@ export default function App({
 				setError(
 					`✅ Dry-run: would delete ${
 						selectedIndices.length
-					} directories (${human(selectedSize)})`,
+					} items (${human(selectedSize)})`,
 				);
 				setSelected(new Set());
 				setConfirm(false);
@@ -280,7 +305,7 @@ export default function App({
 					),
 				);
 				setError(
-					`✅ Deleted ${successes.size} directories (freed ${human(freed)})`,
+					`✅ Deleted ${successes.size} items (freed ${human(freed)})`,
 				);
 			}
 		} finally {
@@ -424,12 +449,33 @@ export default function App({
 	}, [cwd, testMode]);
 
 	useEffect(() => {
-		if (!confirmImmediately) return;
-		if (testMode) return;
 		if (items.length === 0) return;
-		setSelected(new Set(items.map((_, i) => i)));
-		setConfirm(true);
-	}, [confirmImmediately, items, testMode]);
+		if (testMode) return;
+
+		// 1. If confirmImmediately is set, select all and confirm
+		if (confirmImmediately) {
+			setSelected(new Set(items.map((_, i) => i)));
+			setConfirm(true);
+			return;
+		}
+
+		// 2. Otherwise, check config.alwaysDelete
+		if (config.alwaysDelete?.length > 0) {
+			const preSelected = new Set();
+			items.forEach((it, i) => {
+				const rel = path.relative(cwd, it.path);
+				const shouldSelect = config.alwaysDelete.some(pattern =>
+					rel === pattern || rel.startsWith(pattern + path.sep),
+				);
+				if (shouldSelect && it.status !== 'deleted') {
+					preSelected.add(i);
+				}
+			});
+			if (preSelected.size > 0) {
+				setSelected(preSelected);
+			}
+		}
+	}, [confirmImmediately, items, testMode, config.alwaysDelete, cwd]);
 
 	// Auto-deselect deleted items
 	useEffect(() => {
@@ -527,6 +573,7 @@ export default function App({
 						const mark = isSel ? '[x]' : '[ ]';
 						const sizeText =
 							it.size === undefined || it.size === null ? '…' : human(it.size);
+						const timeText = timeAgo(it.mtime);
 
 						let statusColor = undefined;
 						let statusText = '';
@@ -563,11 +610,17 @@ export default function App({
 						// Ensure single-line rendering to avoid terminal scroll jumps
 						const containerWidth = Math.max(24, (cols || 80) - 6);
 						const leftPart = `${prefix} ${mark} ${sizeText.padStart(7)} `;
-						const reserved =
-							leftPart.length + (statusText ? statusText.length : 0);
-						const maxRel = Math.max(3, containerWidth - reserved);
-						const displayRel = truncateMiddle(rel, maxRel);
+						const metaPart = ` ${timeText.padEnd(8)} `;
+						
+						// Add icon based on type/directory
+						const icon = it.isDirectory === false ? '📄' : '📁';
+						const relText = (it.type === 'asset' ? '⚠️ ' : '') + icon + ' ' + displayRel;
 
+						const reserved =
+							leftPart.length + metaPart.length + (statusText ? statusText.length : 0);
+						// Adjusted maxRel calculation to account for icon and warning
+						const maxRel = Math.max(3, containerWidth - reserved - 4); 
+						
 						return (
 							<Box key={it.path}>
 								<Text
@@ -585,7 +638,10 @@ export default function App({
 									strikethrough={it.status === 'deleted'}
 								>
 									{leftPart}
-									{displayRel}
+									<Text dimColor={it.status === 'deleted' ? true : false} color={it.status === 'deleted' ? 'gray' : 'yellow'}>{metaPart}</Text>
+									{it.type === 'asset' ? <Text color="yellow">⚠️ </Text> : null}
+									{it.isDirectory === false ? <Text>📄 </Text> : <Text>📁 </Text>}
+									{truncateMiddle(rel, maxRel)}
 								</Text>
 								{statusText ? (
 									<Text color={statusColor}>{statusText}</Text>
