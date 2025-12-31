@@ -4,7 +4,7 @@ import {human, timeAgo} from '../scanner.js';
 
 function Column({width, children, align = 'flex-start'}) {
 	return (
-		<Box width={width} justifyContent={align} marginRight={1}>
+		<Box width={width} justifyContent={align} paddingRight={1}>
 			{children}
 		</Box>
 	);
@@ -27,7 +27,7 @@ function Row({it, isSelected, isFocused, isDeleted}) {
 	return (
 		<Box width="100%" height={1}>
 			<Box backgroundColor={bgColor} width="100%">
-				<Box width={3} justifyContent="center" marginRight={1}>
+				<Box width={3} justifyContent="center" paddingRight={1}>
 					<Text color={isDeleted ? 'gray' : isSelected ? 'green' : 'gray'}>
 						{statusText || check}
 					</Text>
@@ -77,7 +77,7 @@ export function ArtifactList({
 				width="100%"
 				marginBottom={0}
 			>
-				<Box width={3} marginRight={1} />
+				<Box width={3} paddingRight={1} />
 				<Column width={10} align="flex-end">
 					<Text dimColor bold>
 						Size
