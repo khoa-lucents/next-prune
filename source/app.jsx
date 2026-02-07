@@ -1,40 +1,31 @@
 import process from 'node:process';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import React, {useState, useEffect, useMemo} from 'react';
+import React, {useState, useEffect, useMemo, useCallback} from 'react';
 import {Box, Text, useInput, useApp} from 'ink';
 import {scanArtifacts, getArtifactStats, human} from './scanner.js';
 import {findUnusedAssets} from './asset-scanner.js';
+import {DEFAULT_CONFIG} from './config.js';
+import {useTerminalSize} from './hooks/use-terminal-size.js';
 import {Header} from './ui/header.js';
 import {Dashboard} from './ui/dashboard.js';
 import {Footer} from './ui/footer.js';
 import {ArtifactList} from './ui/artifact-list.js';
 import {ConfirmModal} from './ui/confirm-modal.js';
 
-function useTerminalCols() {
-	const [cols, setCols] = useState(process.stdout?.columns || 80);
-	useEffect(() => {
-		const onResize = () => setCols(process.stdout?.columns || 80);
-		process.stdout?.on?.('resize', onResize);
-		return () => process.stdout?.off?.('resize', onResize);
-	}, []);
-	return cols;
-}
+const toPosixPath = value => value.split(path.sep).join('/');
 
-function useTerminalRows() {
-	const [rows, setRows] = useState(process.stdout?.rows || 24);
-	useEffect(() => {
-		const onResize = () => setRows(process.stdout?.rows || 24);
-		process.stdout?.on?.('resize', onResize);
-		return () => process.stdout?.off?.('resize', onResize);
-	}, []);
-	return rows;
-}
+const matchesConfigPath = (relPath, pattern) => {
+	const rel = toPosixPath(relPath);
+	const normalizedPattern = String(pattern).replaceAll('\\', '/');
+	return rel === normalizedPattern || rel.startsWith(`${normalizedPattern}/`);
+};
 
-const DEFAULT_CONFIG = {
-	alwaysDelete: [],
-	neverDelete: [],
-	checkUnusedAssets: false,
+const SORT_MODES = ['size', 'age', 'path'];
+
+const clampIndex = (nextIndex, totalItems) => {
+	if (totalItems <= 0) return 0;
+	return Math.max(0, Math.min(totalItems - 1, nextIndex));
 };
 
 export default function App({
@@ -47,17 +38,15 @@ export default function App({
 	const {exit} = useApp();
 	const [items, setItems] = useState([]);
 	const [loading, setLoading] = useState(!testMode);
-	// selected is now a Set of paths (strings)
+	// Selected paths are tracked as a set of absolute paths.
 	const [selectedPaths, setSelectedPaths] = useState(new Set());
 	const [index, setIndex] = useState(0);
 	const [sortBy, setSortBy] = useState('size'); // 'size' | 'age' | 'path'
 	const [confirm, setConfirm] = useState(false);
 	const [error, setError] = useState('');
-	// Removed unused showHelp
 
 	// Terminal dimensions
-	const cols = useTerminalCols();
-	const rows = useTerminalRows();
+	const {columns: cols, rows} = useTerminalSize();
 
 	// Derived sorted items
 	const sortedItems = useMemo(() => {
@@ -74,19 +63,50 @@ export default function App({
 		});
 	}, [items, sortBy, cwd]);
 
-	const totalSize = useMemo(() => {
-		return items
-			.filter(it => it.status !== 'deleted')
-			.reduce((acc, it) => acc + (it.size || 0), 0);
-	}, [items]);
+	const itemByPath = useMemo(
+		() => new Map(items.map(it => [it.path, it])),
+		[items],
+	);
 
-	const selectedSize = useMemo(() => {
-		return items
-			.filter(it => selectedPaths.has(it.path) && it.status !== 'deleted')
-			.reduce((acc, it) => acc + (it.size || 0), 0);
+	const {foundCount, totalSize, selectedSize} = useMemo(() => {
+		let found = 0;
+		let total = 0;
+		let selected = 0;
+
+		for (const item of items) {
+			if (item.status === 'deleted') continue;
+
+			found++;
+			const size = typeof item.size === 'number' ? item.size : 0;
+			total += size;
+			if (selectedPaths.has(item.path)) {
+				selected += size;
+			}
+		}
+
+		return {foundCount: found, totalSize: total, selectedSize: selected};
 	}, [items, selectedPaths]);
 
-	const foundCount = items.filter(it => it.status !== 'deleted').length;
+	const sortedIndexByPath = useMemo(() => {
+		const map = new Map();
+		for (const [sortedIndex, item] of sortedItems.entries()) {
+			map.set(item.path, sortedIndex);
+		}
+
+		return map;
+	}, [sortedItems]);
+
+	const selectedIds = useMemo(() => {
+		const indices = new Set();
+		for (const selectedPath of selectedPaths) {
+			const sortedIndex = sortedIndexByPath.get(selectedPath);
+			if (sortedIndex !== undefined) {
+				indices.add(sortedIndex);
+			}
+		}
+
+		return indices;
+	}, [selectedPaths, sortedIndexByPath]);
 
 	// Viewport Logic
 	const listBoxHeight = Math.max(5, (rows || 24) - 12); // Approx height for list
@@ -103,7 +123,7 @@ export default function App({
 	const viewEnd = Math.min(viewStart + listBoxHeight, sortedItems.length);
 
 	// Handlers
-	const doScan = async () => {
+	const doScan = useCallback(async () => {
 		setLoading(true);
 		setError('');
 		try {
@@ -125,8 +145,8 @@ export default function App({
 			if (config.neverDelete?.length > 0) {
 				nextItems = nextItems.filter(it => {
 					const rel = path.relative(cwd, it.path);
-					return !config.neverDelete.some(
-						pattern => rel === pattern || rel.startsWith(pattern + path.sep),
+					return !config.neverDelete.some(pattern =>
+						matchesConfigPath(rel, pattern),
 					);
 				});
 			}
@@ -138,24 +158,29 @@ export default function App({
 		} finally {
 			setLoading(false);
 		}
-	};
+	}, [cwd, config.checkUnusedAssets, config.neverDelete]);
 
-	const performDeletion = async () => {
+	const performDeletion = useCallback(async () => {
 		try {
-			const pathsToDelete = [...selectedPaths].filter(p => {
-				const it = items.find(x => x.path === p);
-				return it && it.status !== 'deleted';
-			});
+			const pathsToDelete = [];
+			for (const selectedPath of selectedPaths) {
+				const item = itemByPath.get(selectedPath);
+				if (item && item.status !== 'deleted') {
+					pathsToDelete.push(selectedPath);
+				}
+			}
 
 			if (pathsToDelete.length === 0) {
 				setConfirm(false);
 				return;
 			}
 
+			const pathsToDeleteSet = new Set(pathsToDelete);
+
 			if (dryRun) {
 				setItems(prev =>
 					prev.map(it =>
-						pathsToDelete.includes(it.path) ? {...it, status: 'dry-run'} : it,
+						pathsToDeleteSet.has(it.path) ? {...it, status: 'dry-run'} : it,
 					),
 				);
 				setError(
@@ -171,108 +196,212 @@ export default function App({
 			// Mark deleting
 			setItems(prev =>
 				prev.map(it =>
-					pathsToDelete.includes(it.path) ? {...it, status: 'deleting'} : it,
+					pathsToDeleteSet.has(it.path) ? {...it, status: 'deleting'} : it,
 				),
 			);
 
-			let freed = 0;
-			const successes = new Set();
+			const deletionResults = await Promise.all(
+				pathsToDelete.map(async pathToDelete => {
+					try {
+						await fs.rm(pathToDelete, {recursive: true, force: true});
+						return {path: pathToDelete, ok: true};
+					} catch {
+						return {path: pathToDelete, ok: false};
+					}
+				}),
+			);
 
-			for (const p of pathsToDelete) {
-				try {
-					await fs.rm(p, {recursive: true, force: true});
-					successes.add(p);
-					const it = items.find(x => x.path === p);
-					if (it) freed += it.size || 0;
-				} catch {
-					setItems(prev =>
-						prev.map(it => (it.path === p ? {...it, status: 'error'} : it)),
-					);
-					setError(`Failed to delete: ${p}`);
+			const succeededPaths = new Set();
+			const failedPaths = [];
+			let freed = 0;
+
+			for (const result of deletionResults) {
+				if (result.ok) {
+					succeededPaths.add(result.path);
+					const item = itemByPath.get(result.path);
+					freed += typeof item?.size === 'number' ? item.size : 0;
+				} else {
+					failedPaths.push(result.path);
 				}
 			}
 
-			// Mark deleted
-			if (successes.size > 0) {
+			if (failedPaths.length > 0) {
+				const failedPathSet = new Set(failedPaths);
 				setItems(prev =>
 					prev.map(it =>
-						successes.has(it.path) ? {...it, status: 'deleted', size: 0} : it,
+						failedPathSet.has(it.path) ? {...it, status: 'error'} : it,
 					),
 				);
-				setError(`✅ Deleted ${successes.size} items (freed ${human(freed)})`);
+				setError(`Failed to delete: ${failedPaths[0]}`);
+			}
+
+			// Mark deleted
+			if (succeededPaths.size > 0) {
+				setItems(prev =>
+					prev.map(it =>
+						succeededPaths.has(it.path)
+							? {...it, status: 'deleted', size: 0}
+							: it,
+					),
+				);
+				setError(
+					`✅ Deleted ${succeededPaths.size} items (freed ${human(freed)})`,
+				);
 			}
 		} finally {
 			setSelectedPaths(new Set());
 			setConfirm(false);
 		}
-	};
+	}, [selectedPaths, itemByPath, dryRun, selectedSize]);
 
-	useInput((input, key) => {
-		if (confirm) {
-			if (key.escape || input?.toLowerCase() === 'n') setConfirm(false);
-			if (input?.toLowerCase() === 'y' || key.return) performDeletion();
+	const moveFocusBy = useCallback(
+		delta => {
+			setIndex(previous => clampIndex(previous + delta, sortedItems.length));
+		},
+		[sortedItems.length],
+	);
+
+	const jumpFocusTo = useCallback(
+		targetIndex => {
+			setIndex(clampIndex(targetIndex, sortedItems.length));
+		},
+		[sortedItems.length],
+	);
+
+	const toggleFocusedItemSelection = useCallback(() => {
+		const focusedItem = sortedItems[index];
+		if (!focusedItem || focusedItem.status === 'deleted') return;
+
+		setSelectedPaths(previous => {
+			const next = new Set(previous);
+			if (next.has(focusedItem.path)) {
+				next.delete(focusedItem.path);
+			} else {
+				next.add(focusedItem.path);
+			}
+
+			return next;
+		});
+	}, [sortedItems, index]);
+
+	const selectAllItems = useCallback(() => {
+		const allPaths = sortedItems
+			.filter(it => it.status !== 'deleted')
+			.map(it => it.path);
+		setSelectedPaths(new Set(allPaths));
+	}, [sortedItems]);
+
+	const cycleSortMode = useCallback(() => {
+		setSortBy(previous => {
+			const nextIndex = (SORT_MODES.indexOf(previous) + 1) % SORT_MODES.length;
+			return SORT_MODES[nextIndex];
+		});
+	}, []);
+
+	const openDeleteConfirmation = useCallback(() => {
+		if (selectedPaths.size > 0) {
+			setConfirm(true);
 			return;
 		}
 
-		if (key.escape || input?.toLowerCase() === 'q') exit();
+		const focusedItem = sortedItems[index];
+		if (!focusedItem || focusedItem.status === 'deleted') return;
 
-		if (key.upArrow) setIndex(Math.max(0, index - 1));
-		if (key.downArrow) setIndex(Math.min(sortedItems.length - 1, index + 1));
+		setSelectedPaths(new Set([focusedItem.path]));
+		setConfirm(true);
+	}, [selectedPaths, sortedItems, index]);
 
-		// Page navigation
-		if (key.pageUp) setIndex(Math.max(0, index - listBoxHeight));
-		if (key.pageDown)
-			setIndex(Math.min(sortedItems.length - 1, index + listBoxHeight));
-		if (key.home) setIndex(0);
-		if (key.end) setIndex(sortedItems.length - 1);
+	const handleConfirmInput = useCallback(
+		(input, key) => {
+			if (!confirm) return false;
+
+			if (key.escape || input?.toLowerCase() === 'n') {
+				setConfirm(false);
+				return true;
+			}
+
+			if (input?.toLowerCase() === 'y' || key.return) {
+				performDeletion();
+			}
+
+			return true;
+		},
+		[confirm, performDeletion],
+	);
+
+	useInput((input, key) => {
+		if (handleConfirmInput(input, key)) return;
+
+		if (key.escape || input?.toLowerCase() === 'q') {
+			exit();
+			return;
+		}
+
+		if (key.upArrow) {
+			moveFocusBy(-1);
+			return;
+		}
+
+		if (key.downArrow) {
+			moveFocusBy(1);
+			return;
+		}
+
+		if (key.pageUp) {
+			moveFocusBy(-listBoxHeight);
+			return;
+		}
+
+		if (key.pageDown) {
+			moveFocusBy(listBoxHeight);
+			return;
+		}
+
+		if (key.home) {
+			jumpFocusTo(0);
+			return;
+		}
+
+		if (key.end) {
+			jumpFocusTo(sortedItems.length - 1);
+			return;
+		}
 
 		if (input === ' ') {
-			const currentPath = sortedItems[index]?.path;
-			if (currentPath && sortedItems[index].status !== 'deleted') {
-				setSelectedPaths(prev => {
-					const next = new Set(prev);
-					if (next.has(currentPath)) next.delete(currentPath);
-					else next.add(currentPath);
-					return next;
-				});
-			}
+			toggleFocusedItemSelection();
+			return;
 		}
 
-		if (input?.toLowerCase() === 'a') {
-			const allPaths = sortedItems
-				.filter(it => it.status !== 'deleted')
-				.map(it => it.path);
-			setSelectedPaths(new Set(allPaths));
+		const loweredInput = input?.toLowerCase();
+		if (loweredInput === 'a') {
+			selectAllItems();
+			return;
 		}
 
-		if (input?.toLowerCase() === 'c') setSelectedPaths(new Set());
-		if (input?.toLowerCase() === 'r' && !loading) doScan();
-
-		if (input?.toLowerCase() === 's') {
-			const modes = ['size', 'age', 'path'];
-			const next = modes[(modes.indexOf(sortBy) + 1) % modes.length];
-			setSortBy(next);
+		if (loweredInput === 'c') {
+			setSelectedPaths(new Set());
+			return;
 		}
 
-		if (input?.toLowerCase() === 'd' || key.return) {
-			if (selectedPaths.size > 0) {
-				setConfirm(true);
-			} else if (sortedItems[index]?.status !== 'deleted') {
-				// Select current if none selected
-				const p = sortedItems[index]?.path;
-				if (p) {
-					setSelectedPaths(new Set([p]));
-					setConfirm(true);
-				}
-			}
+		if (loweredInput === 'r' && !loading) {
+			doScan();
+			return;
+		}
+
+		if (loweredInput === 's') {
+			cycleSortMode();
+			return;
+		}
+
+		if (loweredInput === 'd' || key.return) {
+			openDeleteConfirmation();
 		}
 	});
 
 	// Initial scan
 	useEffect(() => {
 		if (!testMode) doScan();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [cwd, testMode]);
+	}, [testMode, doScan]);
 
 	// Auto-select based on config
 	useEffect(() => {
@@ -289,9 +418,7 @@ export default function App({
 			const pre = new Set();
 			for (const it of items) {
 				const rel = path.relative(cwd, it.path);
-				const hit = config.alwaysDelete.some(
-					p => rel === p || rel.startsWith(p + path.sep),
-				);
+				const hit = config.alwaysDelete.some(p => matchesConfigPath(rel, p));
 				if (hit && it.status !== 'deleted') pre.add(it.path);
 			}
 
@@ -344,16 +471,7 @@ export default function App({
 				<ArtifactList
 					items={sortedItems}
 					selectedIndex={index}
-					selectedIds={
-						new Set(
-							[...selectedPaths]
-								.map(p => {
-									// Map path back to current sorted index for display
-									return sortedItems.findIndex(it => it.path === p);
-								})
-								.filter(i => i !== -1),
-						)
-					}
+					selectedIds={selectedIds}
 					viewStart={viewStart}
 					viewEnd={viewEnd}
 					cwd={cwd}

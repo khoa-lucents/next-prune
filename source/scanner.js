@@ -6,19 +6,6 @@ import os from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
-export const FRAMES = Object.freeze([
-	'⠋',
-	'⠙',
-	'⠹',
-	'⠸',
-	'⠼',
-	'⠴',
-	'⠦',
-	'⠧',
-	'⠇',
-	'⠏',
-]);
-
 // Patterns for Next.js and related build artifacts/caches
 const ARTIFACT_NAMES = new Set([
 	'.next',
@@ -45,6 +32,70 @@ const SKIP_DIRS = new Set([
 	'.docusaurus',
 	'storybook-static',
 ]);
+
+const NEXT_CONFIG_FILES = [
+	'next.config.js',
+	'next.config.mjs',
+	'next.config.cjs',
+	'next.config.ts',
+	'next.config.mts',
+	'next.config.cts',
+];
+const NEXT_CONFIG_FILE_SET = new Set(NEXT_CONFIG_FILES);
+
+const DIST_DIR_PATTERN = /\bdistDir\s*:\s*(['"`])([^'"`]+)\1/;
+
+const stripJavaScriptComments = source =>
+	source.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/\/\/.*$/gm, '');
+
+const normalizeRelativeDir = value => {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	const normalized = path.normalize(trimmed);
+	if (!normalized || normalized === '.') return null;
+	if (path.isAbsolute(normalized)) return null;
+	const parts = normalized.split(path.sep);
+	if (parts.includes('..')) return null;
+	return normalized;
+};
+
+const findNextConfigFile = entries => {
+	for (const entry of entries) {
+		if (NEXT_CONFIG_FILE_SET.has(entry.name)) {
+			return entry.name;
+		}
+	}
+
+	return null;
+};
+
+const getCustomNextArtifact = async (dir, entries) => {
+	const configName = findNextConfigFile(entries);
+	if (!configName) return null;
+
+	try {
+		const configPath = path.join(dir, configName);
+		const configSource = await fs.readFile(configPath, 'utf8');
+		const sanitizedConfig = stripJavaScriptComments(configSource);
+		const match = DIST_DIR_PATTERN.exec(sanitizedConfig);
+		if (!match || !match[2]) return null;
+
+		const relativeDistDir = normalizeRelativeDir(match[2]);
+		if (!relativeDistDir) return null;
+
+		const fullPath = path.join(dir, relativeDistDir);
+		const stat = await fs.stat(fullPath);
+		if (!stat.isDirectory()) return null;
+
+		return {
+			fullPath,
+			topLevelName: relativeDistDir.split(path.sep)[0],
+		};
+	} catch {
+		return null;
+	}
+};
 
 export const human = bytes => {
 	if (bytes === 0) return '0 B';
@@ -74,7 +125,7 @@ export const timeAgo = date => {
 const getNativeSize = async p => {
 	if (os.platform() === 'win32') return null;
 	try {
-		// du -sk returns size in 1024-byte blocks
+		// Du -sk returns size in 1024-byte blocks.
 		const {stdout} = await execFileAsync('du', ['-sk', p]);
 		const match = /^(\d+)\s/.exec(stdout);
 		if (match && match[1]) {
@@ -87,39 +138,59 @@ const getNativeSize = async p => {
 	}
 };
 
-const getRecursiveStatsNode = async p => {
-	let totalSize = 0;
-	let fileCount = 0;
-	let latestMtime = new Date(0);
-
-	const queue = [p];
-
-	// Use a limited concurrency pool for readdir/lstat
-	// Since we are recursive, we'll process the queue in chunks
-	while (queue.length > 0) {
-		const target = queue.pop();
-		try {
-			const stat = await fs.lstat(target);
-			if (stat.mtime > latestMtime) latestMtime = stat.mtime;
-
-			if (stat.isDirectory()) {
-				const entries = await fs.readdir(target, {withFileTypes: true});
-				for (const entry of entries) {
-					queue.push(path.join(target, entry.name));
-				}
-			} else {
-				totalSize += stat.size;
-				fileCount++;
-			}
-		} catch {
-			// Ignore access errors
+const walkStats = async target => {
+	try {
+		const stat = await fs.lstat(target);
+		if (!stat.isDirectory()) {
+			return {
+				size: stat.size,
+				fileCount: 1,
+				latestMtime: stat.mtime,
+			};
 		}
-	}
 
+		let entries = [];
+		try {
+			entries = await fs.readdir(target, {withFileTypes: true});
+		} catch {
+			return {
+				size: 0,
+				fileCount: 0,
+				latestMtime: stat.mtime,
+			};
+		}
+
+		const nestedStats = await Promise.all(
+			entries.map(async entry => walkStats(path.join(target, entry.name))),
+		);
+
+		let size = 0;
+		let fileCount = 0;
+		let latestMtime = stat.mtime;
+		for (const entryStats of nestedStats) {
+			size += entryStats.size;
+			fileCount += entryStats.fileCount;
+			if (entryStats.latestMtime > latestMtime) {
+				latestMtime = entryStats.latestMtime;
+			}
+		}
+
+		return {size, fileCount, latestMtime};
+	} catch {
+		return {
+			size: 0,
+			fileCount: 0,
+			latestMtime: new Date(0),
+		};
+	}
+};
+
+const getRecursiveStatsNode = async p => {
+	const stats = await walkStats(p);
 	return {
-		size: totalSize,
-		mtime: latestMtime,
-		fileCount,
+		size: stats.size,
+		mtime: stats.latestMtime,
+		fileCount: stats.fileCount,
 		isDirectory: true,
 	};
 };
@@ -155,77 +226,114 @@ export const getArtifactStats = async p => {
 	}
 };
 
+const findNodeModulesCacheArtifacts = async nodeModulesPath => {
+	const cachePath = path.join(nodeModulesPath, '.cache');
+	try {
+		const cacheEntries = await fs.readdir(cachePath, {withFileTypes: true});
+		const artifacts = [];
+		for (const entry of cacheEntries) {
+			if (
+				entry.isDirectory() &&
+				(entry.name === 'next' || entry.name === 'turbopack')
+			) {
+				artifacts.push(path.join(cachePath, entry.name));
+			}
+		}
+
+		return artifacts;
+	} catch {
+		return [];
+	}
+};
+
+const findVercelOutputArtifact = async vercelPath => {
+	const outputPath = path.join(vercelPath, 'output');
+	try {
+		const stat = await fs.stat(outputPath);
+		return stat.isDirectory() ? outputPath : null;
+	} catch {
+		return null;
+	}
+};
+
 export const scanArtifacts = async cwd => {
 	const results = new Set();
-	const queue = [cwd];
 	const processed = new Set();
 
-	// BFS Walker
-	while (queue.length > 0) {
-		const dir = queue.shift();
-		if (processed.has(dir)) continue;
+	const scanDirectory = async dir => {
+		if (processed.has(dir)) return;
 		processed.add(dir);
 
+		let entries = [];
 		try {
-			const entries = await fs.readdir(dir, {withFileTypes: true});
-			const nextDirs = [];
+			entries = await fs.readdir(dir, {withFileTypes: true});
+		} catch {
+			return;
+		}
 
-			for (const entry of entries) {
-				const full = path.join(dir, entry.name);
+		const customNextArtifact = await getCustomNextArtifact(dir, entries);
+		if (customNextArtifact) {
+			results.add(customNextArtifact.fullPath);
+		}
 
-				if (entry.isDirectory()) {
-					// Check direct matches
-					if (ARTIFACT_NAMES.has(entry.name)) {
-						results.add(full);
-						// Don't traverse inside an artifact we already found
-						continue;
-					}
+		const nextDirectories = [];
+		const specialCheckPromises = [];
 
-					// Check nested (deep) artifacts
-					// This optimization avoids traversing deep into node_modules unless necessary
-					// Logic: If dir is 'node_modules', we only look for '.cache'
-					if (entry.name === 'node_modules') {
-						const cachePath = path.join(full, '.cache');
-						// Quickly check if .cache exists without fully walking node_modules
-						try {
-							const cacheStat = await fs.stat(cachePath);
-							if (cacheStat.isDirectory()) {
-								const cacheEntries = await fs.readdir(cachePath);
-								if (cacheEntries.includes('next'))
-									results.add(path.join(cachePath, 'next'));
-								if (cacheEntries.includes('turbopack'))
-									results.add(path.join(cachePath, 'turbopack'));
-							}
-						} catch {
-							// ignore
-						}
-					} else if (entry.name === '.vercel') {
-						const outPath = path.join(full, 'output');
-						try {
-							const outStat = await fs.stat(outPath);
-							if (outStat.isDirectory()) {
-								results.add(outPath);
-							}
-						} catch {
-							// ignore
-						}
-					}
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const fullPath = path.join(dir, entry.name);
 
-					// Should we recurse?
-					if (!SKIP_DIRS.has(entry.name)) {
-						nextDirs.push(full);
-					}
-				}
+			if (customNextArtifact?.topLevelName === entry.name) {
+				continue;
 			}
 
-			// Add next dirs to queue
-			for (const d of nextDirs) queue.push(d);
-		} catch {
-			// ignore access errors
+			if (ARTIFACT_NAMES.has(entry.name)) {
+				results.add(fullPath);
+				continue;
+			}
+
+			if (entry.name === 'node_modules') {
+				specialCheckPromises.push(
+					(async () => {
+						const artifactPaths = await findNodeModulesCacheArtifacts(fullPath);
+						for (const artifactPath of artifactPaths) {
+							results.add(artifactPath);
+						}
+					})(),
+				);
+				continue;
+			}
+
+			if (entry.name === '.vercel') {
+				specialCheckPromises.push(
+					(async () => {
+						const outputPath = await findVercelOutputArtifact(fullPath);
+						if (outputPath) {
+							results.add(outputPath);
+						}
+					})(),
+				);
+				continue;
+			}
+
+			if (SKIP_DIRS.has(entry.name)) {
+				continue;
+			}
+
+			nextDirectories.push(fullPath);
 		}
-	}
+
+		await Promise.all(specialCheckPromises);
+
+		await Promise.all(
+			nextDirectories.map(async nextDirectory => scanDirectory(nextDirectory)),
+		);
+	};
+
+	await scanDirectory(cwd);
 
 	// Calculate stats in parallel with a concurrency limit
+	// (Promise.all is uncapped, but usually OS file limits are high enough for this list size)
 	const paths = [...results];
 	const stats = await Promise.all(
 		paths.map(async p => {

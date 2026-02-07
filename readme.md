@@ -12,6 +12,7 @@
 **Safe to delete (recreated by tools):**
 
 - `.next/` - Next.js build output and cache
+- `distDir` output configured in `next.config.*` (for example `build/` or `dist/`)
 - `out/` - Next.js static export output
 - `.vercel/output/` - Vercel Build Output API bundle
 - `.turbo/` - Turborepo cache (default at `.turbo/cache`)
@@ -29,6 +30,7 @@
 
 - 🎯 **New:** Modern Dashboard UI with statistical overview
 - 🔍 Scans recursively for Next.js, Vercel, and Turborepo build artifacts
+- 🧭 Detects custom Next.js build output via `distDir` in `next.config.*` (including Next.js 16 projects)
 - 📊 Shows disk usage for each directory found
 - ⇅ **New:** Sort artifacts by Size, Age, or Path
 - ✅ Select multiple directories for batch deletion
