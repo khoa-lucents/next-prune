@@ -1,0 +1,9 @@
+{
+	"version": 2,
+	"scenarios": {
+		"medium": {
+			"scanArtifactsMedianMs": 90,
+			"gateMetric": "scanArtifactsMedianMs"
+		}
+	}
+}

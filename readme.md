@@ -1,11 +1,11 @@
 # Next Prune 🧹
 
-> Prune Next.js build artifacts and caches from your terminal. Interactive TUI to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, and other safe-to-delete directories to free disk space.
+> Prune Next.js build artifacts and caches from your terminal. Interactive OpenTUI UI to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, workspace `node_modules`, and package-manager caches to free disk space.
 
 [![npm version](https://img.shields.io/npm/v/next-prune.svg)](https://www.npmjs.com/package/next-prune)
 [![CI](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/node/v/next-prune.svg)](https://nodejs.org/)
+[![Bun Version](https://img.shields.io/badge/bun-%3E%3D1.3.0-f9f1e1)](https://bun.sh/)
 
 ## What Gets Pruned
 
@@ -17,7 +17,9 @@
 - `.vercel/output/` - Vercel Build Output API bundle
 - `.turbo/` - Turborepo cache (default at `.turbo/cache`)
 - `.vercel_build_output/` - Legacy Vercel build output
-- `node_modules/.cache/next` - Next.js cache in node_modules
+- `node_modules/.cache/next` and `node_modules/.cache/turbopack`
+- Workspace `node_modules/` directories (when workspace cleanup is enabled)
+- Package-manager caches (`.npm`, `.pnpm-store`, `.yarn/cache`, `.yarn/unplugged`, `.bun/install/cache`)
 
 **Always preserved:**
 
@@ -35,27 +37,34 @@
 - ⇅ **New:** Sort artifacts by Size, Age, or Path
 - ✅ Select multiple directories for batch deletion
 - 🚀 Non-interactive modes for scripting (`--list`, `--json`)
+- 🧱 Monorepo/workspace cleanup controls (`--monorepo`, `--cleanup-scope`, `--workspace-detect`)
 - 🛡️ Safe deletion with confirmation prompts
 
 ## Install
 
 ```bash
-$ npm install --global next-prune
+$ bun add --global next-prune
 ```
 
 ## Quick Start
 
 ```bash
 # Scan and interactively select what to delete
-$ npx next-prune
+$ bunx next-prune
 
-# One-shot cleanup (no prompts)
-$ npx next-prune --yes
+# One-shot cleanup of safe artifacts only (no --apply needed)
+$ bunx next-prune --yes --cleanup-scope=safe
 
 # Non-interactive listing
-$ npx next-prune --list
+$ bunx next-prune --list
 
-$ npx next-prune --json
+$ bunx next-prune --json
+
+# Include node_modules / PM caches in non-interactive cleanup
+$ bunx next-prune --yes --apply
+
+# Workspace-only scan in a monorepo
+$ bunx next-prune --json --cleanup-scope=workspace --monorepo
 ```
 
 ## CLI
@@ -67,18 +76,31 @@ $ next-prune --help
     $ next-prune
 
   Options
-    --yes, -y      Skip confirmation and delete selected immediately
-    --dry-run       Don't delete anything; just show results
-    --cwd=<path>    Directory to scan (default: current working dir)
-    --list          Non-interactive list of artifacts and sizes, then exit
-    --json          Output JSON (implies --list)
+    --yes, -y     Skip confirmation and delete selected immediately
+    --dry-run     Don't delete anything; just show results
+    --cwd=<path>  Directory to scan (default: current working dir)
+    --list        Non-interactive list of artifacts and sizes, then exit
+    --json        Output JSON (implies --list)
+    --monorepo    Scan as a monorepo/workspace root
+    --cleanup-scope=<scope>
+                  Cleanup scope (e.g. all, safe, node-modules, pm-caches)
+    --no-node-modules
+                  Exclude node_modules candidates
+    --no-pm-caches
+                  Exclude package-manager cache candidates
+    --workspace-detect
+                  Enable workspace auto-detection
+    --max-depth=<n>
+                  Maximum scan depth
+    --apply       Required with --yes to delete node_modules/pm-caches
 
   Examples
-    $ next-prune                # interactive TUI
-    $ next-prune --dry-run      # scan only
-    $ next-prune --list         # list found artifacts
-    $ next-prune --json         # machine-readable output
-    $ next-prune --yes          # one-shot cleanup
+    $ next-prune
+    $ next-prune --dry-run
+    $ next-prune --list --cleanup-scope=safe
+    $ next-prune --json --cleanup-scope=workspace --monorepo
+    $ next-prune --yes --cleanup-scope=safe
+    $ next-prune --yes --apply --cleanup-scope=node-modules,pm-caches
 ```
 
 ## One-Shot Cleanup
@@ -86,9 +108,31 @@ $ next-prune --help
 For quick cleanup without interaction:
 
 ```bash
-# Equivalent to: rm -rf .next out .vercel/output .turbo
-$ next-prune --yes
+# Safe artifacts only (won't touch node_modules or PM caches)
+$ next-prune --yes --cleanup-scope=safe
+
+# Include node_modules / PM caches (explicit opt-in required)
+$ next-prune --yes --apply
 ```
+
+`--yes` without `--apply` will refuse deletion if the selected candidates include
+`node_modules` or package-manager caches.
+
+## Pilotty Smoke Test
+
+If you have [`pilotty`](https://github.com/msmps/pilotty) installed, run the
+end-to-end TUI smoke test:
+
+```bash
+bun run test:pilotty
+```
+
+What it validates:
+
+- OpenTUI app launches in a real PTY session
+- keyboard navigation updates screen state (`S`, `D`, `N`, `Y`, `Q`)
+- confirm modal opens/cancels correctly
+- confirmed deletion actually removes an artifact directory
 
 ## Contributing
 
