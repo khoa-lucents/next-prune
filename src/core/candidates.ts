@@ -27,6 +27,9 @@ const PM_CACHE_PATTERNS = [
 const CLEANUP_SCOPE_MAP: Record<string, CandidateType[]> = {
 	default: ALL_CANDIDATE_TYPES,
 	all: ALL_CANDIDATE_TYPES,
+	'cold-storage': ALL_CANDIDATE_TYPES,
+	coldstorage: ALL_CANDIDATE_TYPES,
+	archive: ALL_CANDIDATE_TYPES,
 	project: ALL_CANDIDATE_TYPES,
 	workspace: ALL_CANDIDATE_TYPES,
 	safe: ['artifact', 'asset'],
@@ -73,7 +76,7 @@ export const parseCleanupScope = (
 		const mappedTypes = CLEANUP_SCOPE_MAP[normalizedToken];
 		if (!mappedTypes) {
 			throw new Error(
-				`Invalid --cleanup-scope value: "${rawToken}". Expected one or more of: all, project, workspace, safe, node-modules, pm-caches`,
+				`Invalid --cleanup-scope value: "${rawToken}". Expected one or more of: all, cold-storage, project, workspace, safe, node-modules, pm-caches`,
 			);
 		}
 		for (const mappedType of mappedTypes) {
@@ -115,6 +118,15 @@ export const parseScannerCleanupScopes = (
 		const normalizedToken = rawToken.trim().toLowerCase();
 		if (!normalizedToken) continue;
 		if (normalizedToken === 'all') {
+			resolved.add('project');
+			resolved.add('workspace');
+			continue;
+		}
+		if (
+			normalizedToken === 'cold-storage' ||
+			normalizedToken === 'coldstorage' ||
+			normalizedToken === 'archive'
+		) {
 			resolved.add('project');
 			resolved.add('workspace');
 			continue;

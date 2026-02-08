@@ -43,6 +43,12 @@ test('parseCleanupScope supports aliases and validates unknown values', () => {
 		'node_modules',
 		'pm-cache',
 	]);
+	expect([...parseCleanupScope('cold-storage')]).toEqual([
+		'artifact',
+		'asset',
+		'node_modules',
+		'pm-cache',
+	]);
 
 	expect(() => parseCleanupScope('not-a-scope')).toThrow(
 		'Invalid --cleanup-scope value:',
@@ -74,6 +80,9 @@ test('parseScannerCleanupScopes maps all/project/workspace values', () => {
 
 	const allScopes = parseScannerCleanupScopes('all');
 	expect(allScopes?.sort()).toEqual(['project', 'workspace']);
+
+	const coldStorageScopes = parseScannerCleanupScopes('cold-storage');
+	expect(coldStorageScopes?.sort()).toEqual(['project', 'workspace']);
 });
 
 test('buildCleanupScopeLabel appends active modifiers', () => {

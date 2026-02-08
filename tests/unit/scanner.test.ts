@@ -54,7 +54,7 @@ test('getArtifactStats returns stable zeroed stats for missing path', async () =
 	expect(Boolean(stats.error)).toBe(true);
 });
 
-test('scanArtifacts includes workspace node_modules candidates only in workspace scope', async () => {
+test('scanArtifacts includes node_modules candidates in both workspace and project scopes', async () => {
 	const cwd = await createTempDirectory();
 	const workspaceDir = path.join(cwd, 'packages/web');
 
@@ -83,9 +83,9 @@ test('scanArtifacts includes workspace node_modules candidates only in workspace
 	).toBe(true);
 	expect(
 		scopedRelativePaths.has(
-			path.join('packages', 'web', 'node_modules', '.cache', 'next'),
+			path.join('packages', 'web', 'node_modules', '.cache'),
 		),
-	).toBe(true);
+	).toBe(false);
 
 	const projectOnlyItems = await scanArtifacts(cwd, {
 		cleanupScopes: ['project'],
@@ -95,7 +95,19 @@ test('scanArtifacts includes workspace node_modules candidates only in workspace
 	);
 	expect(
 		projectOnlyRelativePaths.has(path.join('packages', 'web', 'node_modules')),
-	).toBe(false);
+	).toBe(true);
+});
+
+test('scanArtifacts includes project node_modules candidates in project scope', async () => {
+	const cwd = await createTempDirectory();
+	await fs.mkdir(path.join(cwd, 'node_modules/react'), {recursive: true});
+
+	const items = await scanArtifacts(cwd, {cleanupScopes: ['project']});
+	const relativePaths = new Set(
+		items.map(item => path.relative(cwd, item.path)),
+	);
+
+	expect(relativePaths.has('node_modules')).toBe(true);
 });
 
 test('scanArtifacts uses heuristic workspace discovery fallback when manifest is missing', async () => {

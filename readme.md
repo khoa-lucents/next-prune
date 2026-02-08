@@ -17,8 +17,7 @@
 - `.vercel/output/` - Vercel Build Output API bundle
 - `.turbo/` - Turborepo cache (default at `.turbo/cache`)
 - `.vercel_build_output/` - Legacy Vercel build output
-- `node_modules/.cache/next` and `node_modules/.cache/turbopack`
-- Workspace `node_modules/` directories (when workspace cleanup is enabled)
+- Project and workspace `node_modules/` directories
 - Package-manager caches (`.npm`, `.pnpm-store`, `.yarn/cache`, `.yarn/unplugged`, `.bun/install/cache`)
 
 **Always preserved:**
@@ -34,6 +33,8 @@
 - 🔍 Scans recursively for Next.js, Vercel, and Turborepo build artifacts
 - 🧭 Detects custom Next.js build output via `distDir` in `next.config.*` (including Next.js 16 projects)
 - 📊 Shows disk usage for each directory found
+- 🧭 Guided profile picker (`safe`, `deps-only`, `cold-storage`, `custom`)
+- 🎛️ Scope and path-filter prompts before candidate selection
 - ⇅ Sort candidates by size, age, or path before selection
 - 🧾 Interactive multi-select with candidate metadata hints
 - ✅ Select multiple directories for batch deletion
@@ -64,6 +65,9 @@ $ bunx next-prune --json
 # Include node_modules / PM caches in non-interactive cleanup
 $ bunx next-prune --yes --apply
 
+# Aggressive cold-storage cleanup (artifacts + node_modules + PM caches + workspace)
+$ bunx next-prune --yes --apply --cold-storage
+
 # Workspace-only scan in a monorepo
 $ bunx next-prune --json --cleanup-scope=workspace --monorepo
 ```
@@ -82,9 +86,11 @@ $ next-prune --help
     --cwd=<path>  Directory to scan (default: current working dir)
     --list        Non-interactive list of artifacts and sizes, then exit
     --json        Output JSON (implies --list)
+    --cold-storage
+                  Aggressive slim mode for archival/cold-storage cleanup
     --monorepo    Scan as a monorepo/workspace root
     --cleanup-scope=<scope>
-                  Cleanup scope (e.g. all, safe, node-modules, pm-caches)
+                  Cleanup scope (e.g. all, cold-storage, safe, node-modules, pm-caches)
     --no-node-modules
                   Exclude node_modules candidates
     --no-pm-caches
@@ -101,6 +107,7 @@ $ next-prune --help
     $ next-prune --list --cleanup-scope=safe
     $ next-prune --json --cleanup-scope=workspace --monorepo
     $ next-prune --yes --cleanup-scope=safe
+    $ next-prune --yes --apply --cold-storage
     $ next-prune --yes --apply --cleanup-scope=node-modules,pm-caches
 ```
 
@@ -114,6 +121,9 @@ $ next-prune --yes --cleanup-scope=safe
 
 # Include node_modules / PM caches (explicit opt-in required)
 $ next-prune --yes --apply
+
+# Purpose-built cold-storage mode (includes monorepo workspace scan)
+$ next-prune --yes --apply --cold-storage
 ```
 
 `--yes` without `--apply` will refuse deletion if the selected candidates include

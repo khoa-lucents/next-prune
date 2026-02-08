@@ -46,11 +46,31 @@ if ! kill -0 "$DAEMON_PID" >/dev/null 2>&1; then
 fi
 
 pilotty spawn --name "$SESSION" --cwd "$ROOT_DIR" bun run src/cli.ts --cwd "$APP_DIR" >/dev/null
-pilotty wait-for -s "$SESSION" "Sort candidates by:" -t 15000 >/dev/null
+pilotty wait-for -s "$SESSION" "Choose cleanup profile:" -t 15000 >/dev/null
 
 hash="$(pilotty snapshot -s "$SESSION" | jq -r '.content_hash')"
 
+# Keep default profile.
+pilotty key -s "$SESSION" enter >/dev/null
+pilotty snapshot -s "$SESSION" --await-change "$hash" --settle 120 > "$FIXTURE_ROOT/profile.json"
+
+if ! jq -r '.text' "$FIXTURE_ROOT/profile.json" | grep -q 'Filter paths by substring (optional):'; then
+  echo "Expected path filter prompt after profile selection" >&2
+  exit 1
+fi
+
+# Keep empty path filter.
+hash="$(jq -r '.content_hash' "$FIXTURE_ROOT/profile.json")"
+pilotty key -s "$SESSION" enter >/dev/null
+pilotty snapshot -s "$SESSION" --await-change "$hash" --settle 120 > "$FIXTURE_ROOT/sort.json"
+
+if ! jq -r '.text' "$FIXTURE_ROOT/sort.json" | grep -q 'Sort candidates by:'; then
+  echo "Expected sort prompt after path filter" >&2
+  exit 1
+fi
+
 # Keep default sort order.
+hash="$(jq -r '.content_hash' "$FIXTURE_ROOT/sort.json")"
 pilotty key -s "$SESSION" enter >/dev/null
 pilotty snapshot -s "$SESSION" --await-change "$hash" --settle 120 > "$FIXTURE_ROOT/multiselect.json"
 if ! jq -r '.text' "$FIXTURE_ROOT/multiselect.json" | grep -q 'Select candidates to prune:'; then

@@ -62,16 +62,14 @@ test('cli config neverDelete matches cross-platform path separators', async () =
 	});
 	await fs.writeFile(
 		path.join(appDir, '.next-prunerc.json'),
-		JSON.stringify({neverDelete: [String.raw`node_modules\.cache`]}),
+		JSON.stringify({neverDelete: [String.raw`node_modules\\`]}),
 	);
 
 	const {stdout} = await runCli(['--json', `--cwd=${appDir}`]);
 
 	const relativePaths = toRelativePaths(stdout, appDir);
 
-	expect(relativePaths.has(path.join('node_modules', '.cache', 'next'))).toBe(
-		false,
-	);
+	expect(relativePaths.has('node_modules')).toBe(false);
 	expect(relativePaths.has('.next')).toBe(true);
 });
 
@@ -118,6 +116,7 @@ test('cli --yes --apply deletes node_modules/pm-cache candidates', async () => {
 	const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'next-prune-'));
 	const appDir = path.join(temporaryDir, 'app');
 	const cacheDir = path.join(appDir, 'node_modules/.cache/next');
+	const nodeModulesDir = path.join(appDir, 'node_modules');
 
 	await fs.mkdir(cacheDir, {recursive: true});
 
@@ -125,6 +124,7 @@ test('cli --yes --apply deletes node_modules/pm-cache candidates', async () => {
 
 	expect(stdout.includes('Deleted')).toBe(true);
 	expect(await pathExists(cacheDir)).toBe(false);
+	expect(await pathExists(nodeModulesDir)).toBe(false);
 });
 
 test('cli --yes --no-node-modules skips node_modules candidates without --apply', async () => {
@@ -163,7 +163,7 @@ test('cli --yes --no-pm-caches skips package-manager caches without --apply', as
 	expect(await pathExists(path.join(appDir, '.pnpm-store'))).toBe(true);
 });
 
-test('cli --cleanup-scope=safe excludes node_modules cache candidates', async () => {
+test('cli --cleanup-scope=safe excludes node_modules candidates', async () => {
 	const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'next-prune-'));
 	const appDir = path.join(temporaryDir, 'app');
 	await fs.mkdir(path.join(appDir, '.next'), {recursive: true});
@@ -180,9 +180,51 @@ test('cli --cleanup-scope=safe excludes node_modules cache candidates', async ()
 	const relativePaths = toRelativePaths(stdout, appDir);
 
 	expect(relativePaths.has('.next')).toBe(true);
-	expect(relativePaths.has(path.join('node_modules', '.cache', 'next'))).toBe(
-		false,
+	expect(relativePaths.has('node_modules')).toBe(false);
+});
+
+test('cli --cold-storage enables aggressive monorepo cleanup despite restrictive config', async () => {
+	const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'next-prune-'));
+	const appDir = path.join(temporaryDir, 'repo');
+	const workspaceDir = path.join(appDir, 'packages/web');
+
+	await fs.mkdir(path.join(workspaceDir, 'node_modules/left-pad'), {
+		recursive: true,
+	});
+	await fs.mkdir(path.join(appDir, '.pnpm-store/v3'), {recursive: true});
+	await fs.writeFile(
+		path.join(appDir, 'package.json'),
+		JSON.stringify({
+			name: 'repo',
+			private: true,
+			workspaces: ['packages/*'],
+		}),
 	);
+	await fs.writeFile(
+		path.join(workspaceDir, 'package.json'),
+		JSON.stringify({name: 'web'}),
+	);
+	await fs.writeFile(
+		path.join(appDir, '.next-prunerc.json'),
+		JSON.stringify({
+			monorepoMode: 'off',
+			workspaceDiscoveryMode: 'manifest-only',
+			includeNodeModules: false,
+			includeProjectLocalPmCaches: false,
+		}),
+	);
+
+	const {stdout} = await runCli([
+		'--json',
+		'--cold-storage',
+		`--cwd=${appDir}`,
+	]);
+	const relativePaths = toRelativePaths(stdout, appDir);
+
+	expect(relativePaths.has(path.join('packages', 'web', 'node_modules'))).toBe(
+		true,
+	);
+	expect(relativePaths.has('.pnpm-store')).toBe(true);
 });
 
 test('cli --monorepo enables workspace cleanup when config monorepoMode is off', async () => {

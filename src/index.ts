@@ -11,6 +11,7 @@ import {
 	outro,
 	select,
 	spinner,
+	text,
 } from '@clack/prompts';
 import {
 	buildCleanupScopeLabel,
@@ -20,10 +21,22 @@ import {
 import {selectAlwaysDeletePaths} from './core/config.js';
 import {deleteItems, getTotalSize} from './core/delete.js';
 import {human, timeAgo} from './core/format.js';
-import type {PruneConfig, RuntimeScanOptions, ScanItem} from './core/types.js';
+import type {
+	CleanupScope,
+	PruneConfig,
+	RuntimeScanOptions,
+	ScanItem,
+} from './core/types.js';
 
 type SortMode = 'size' | 'age' | 'path';
 type TypeCounts = Record<CandidateType, number>;
+type ScopeMode = 'all' | CleanupScope;
+type CleanupProfile =
+	| 'config-default'
+	| 'safe'
+	| 'deps-only'
+	| 'cold-storage'
+	| 'custom';
 
 interface InteractiveCandidate {
 	path: string;
@@ -31,6 +44,7 @@ interface InteractiveCandidate {
 	size: number;
 	mtime: Date | null;
 	candidateType: CandidateType;
+	cleanupScope: CleanupScope;
 }
 
 export interface RuntimeProps {
@@ -47,12 +61,80 @@ const SORT_OPTIONS: Array<{value: SortMode; label: string; hint: string}> = [
 	{value: 'path', label: 'Path (A-Z)', hint: 'Alphabetical order'},
 ];
 
+const CLEANUP_PROFILE_OPTIONS: Array<{
+	value: CleanupProfile;
+	label: string;
+	hint: string;
+}> = [
+	{
+		value: 'config-default',
+		label: 'Use current scan defaults',
+		hint: 'Respect current CLI/config scan behavior',
+	},
+	{
+		value: 'safe',
+		label: 'Safe artifacts only',
+		hint: 'Build outputs + optional unused assets',
+	},
+	{
+		value: 'deps-only',
+		label: 'Dependencies and caches',
+		hint: 'node_modules + package-manager caches',
+	},
+	{
+		value: 'cold-storage',
+		label: 'Cold storage (aggressive)',
+		hint: 'Everything for maximum size reduction',
+	},
+	{
+		value: 'custom',
+		label: 'Custom mix',
+		hint: 'Pick candidate families and scope manually',
+	},
+];
+
+const SCOPE_MODE_OPTIONS: Array<{
+	value: ScopeMode;
+	label: string;
+	hint: string;
+}> = [
+	{
+		value: 'all',
+		label: 'All scanned scopes',
+		hint: 'Project + workspace candidates',
+	},
+	{
+		value: 'project',
+		label: 'Project scope only',
+		hint: 'Current root project candidates',
+	},
+	{
+		value: 'workspace',
+		label: 'Workspace scope only',
+		hint: 'Detected monorepo workspace candidates',
+	},
+];
+
+const TYPE_MODE_LABELS: Record<CandidateType, string> = {
+	artifact: 'Build artifacts',
+	asset: 'Unused assets',
+	node_modules: 'node_modules',
+	'pm-cache': 'Package-manager caches',
+};
+
 const CANDIDATE_TYPE_LABELS: Record<CandidateType, string> = {
 	artifact: 'artifact',
 	asset: 'asset',
 	node_modules: 'node_modules',
 	'pm-cache': 'pm-cache',
 };
+
+const DEFAULT_PROFILE_TYPES: CandidateType[] = [
+	'artifact',
+	'asset',
+	'node_modules',
+	'pm-cache',
+];
 
 const normalizeMtime = (value: unknown): Date | null => {
 	if (value instanceof Date && Number.isFinite(value.getTime())) {
@@ -79,6 +161,7 @@ const toInteractiveCandidate = (
 		typeof item.size === 'number' && Number.isFinite(item.size) ? item.size : 0,
 	mtime: normalizeMtime(item.mtime),
 	candidateType: resolveCandidateType(item),
+	cleanupScope: item.cleanupScope ?? 'project',
 });
 
 const sortCandidates = (
@@ -113,6 +196,19 @@ const countByType = (items: readonly InteractiveCandidate[]): TypeCounts => {
 	return counts;
 };
 
+const countByScope = (
+	items: readonly InteractiveCandidate[],
+): Record<CleanupScope, number> => {
+	const counts: Record<CleanupScope, number> = {
+		project: 0,
+		workspace: 0,
+	};
+	for (const item of items) {
+		counts[item.cleanupScope]++;
+	}
+	return counts;
+};
+
 const formatTypeCounts = (counts: TypeCounts): string => {
 	const sections = [
 		`artifact ${counts.artifact}`,
@@ -123,6 +219,9 @@ const formatTypeCounts = (counts: TypeCounts): string => {
 	return sections.join(', ');
 };
 
+const formatScopeCounts = (counts: Record<CleanupScope, number>): string =>
+	`project ${counts.project}, workspace ${counts.workspace}`;
+
 const truncateMiddle = (value: string, maxLength: number): string => {
 	if (maxLength <= 3 || value.length <= maxLength) return value;
 	const headLength = Math.ceil((maxLength - 3) / 2);
@@ -132,7 +231,7 @@ const truncateMiddle = (value: string, maxLength: number): string => {
 
 const formatHint = (item: InteractiveCandidate): string => {
 	const age = item.mtime ? timeAgo(item.mtime) : 'unknown age';
-	return `${human(item.size)} | ${age} | ${CANDIDATE_TYPE_LABELS[item.candidateType]}`;
+	return `${human(item.size)} | ${age} | ${CANDIDATE_TYPE_LABELS[item.candidateType]} | ${item.cleanupScope}`;
 };
 
 const findSelectedCandidates = (
@@ -141,6 +240,52 @@ const findSelectedCandidates = (
 ): InteractiveCandidate[] => {
 	const selectedPathSet = new Set(selectedPaths);
 	return candidates.filter(candidate => selectedPathSet.has(candidate.path));
+};
+
+const intersectTypes = (
+	available: ReadonlySet<CandidateType>,
+	types: readonly CandidateType[],
+): Set<CandidateType> => {
+	const selected = new Set<CandidateType>();
+	for (const type of types) {
+		if (available.has(type)) selected.add(type);
+	}
+	return selected;
+};
+
+const resolvePresetTypes = (
+	profile: Exclude<CleanupProfile, 'custom'>,
+	availableTypes: ReadonlySet<CandidateType>,
+): Set<CandidateType> => {
+	if (profile === 'safe') {
+		return intersectTypes(availableTypes, ['artifact', 'asset']);
+	}
+	if (profile === 'deps-only') {
+		return intersectTypes(availableTypes, ['node_modules', 'pm-cache']);
+	}
+	return intersectTypes(availableTypes, DEFAULT_PROFILE_TYPES);
+};
+
+const filterCandidates = (
+	candidates: readonly InteractiveCandidate[],
+	options: {
+		typeSet: ReadonlySet<CandidateType>;
+		scopeMode: ScopeMode;
+		query: string;
+	},
+): InteractiveCandidate[] => {
+	const normalizedQuery = options.query.trim().toLowerCase();
+	return candidates.filter(candidate => {
+		if (!options.typeSet.has(candidate.candidateType)) return false;
+		if (
+			options.scopeMode !== 'all' &&
+			candidate.cleanupScope !== options.scopeMode
+		) {
+			return false;
+		}
+		if (!normalizedQuery) return true;
+		return candidate.relPath.toLowerCase().includes(normalizedQuery);
+	});
 };
 
 export const runInteractiveApp = async ({
@@ -160,6 +305,7 @@ export const runInteractiveApp = async ({
 	}
 
 	const typeCounts = countByType(candidates);
+	const scopeCounts = countByScope(candidates);
 	const scopeLabel = buildCleanupScopeLabel({
 		cleanupScope: scanOptions?.cleanupScope,
 		includeNodeModules: scanOptions?.includeNodeModules,
@@ -171,9 +317,107 @@ export const runInteractiveApp = async ({
 			`Scope: ${scopeLabel}`,
 			`Found: ${candidates.length} candidates (${human(getTotalSize(candidates))})`,
 			`Types: ${formatTypeCounts(typeCounts)}`,
+			`Scopes: ${formatScopeCounts(scopeCounts)}`,
 			dryRun ? 'Mode: dry-run' : 'Mode: apply on confirmation',
 		].join('\n'),
 		'Scan summary',
+	);
+
+	const profile = await select<CleanupProfile>({
+		message: 'Choose cleanup profile:',
+		initialValue: 'config-default',
+		options: CLEANUP_PROFILE_OPTIONS,
+	});
+	if (isCancel(profile)) {
+		cancel('Operation cancelled.');
+		return;
+	}
+
+	const availableTypes = new Set(
+		candidates.map(candidate => candidate.candidateType),
+	);
+	let activeTypes =
+		profile === 'custom'
+			? new Set<CandidateType>()
+			: resolvePresetTypes(profile, availableTypes);
+	if (profile === 'custom') {
+		const selectedTypes = await multiselect<CandidateType>({
+			message: 'Select candidate families:',
+			required: true,
+			initialValues: [...availableTypes],
+			options: DEFAULT_PROFILE_TYPES.map(type => ({
+				value: type,
+				label: TYPE_MODE_LABELS[type],
+				hint: `${typeCounts[type]} found`,
+			})),
+		});
+		if (isCancel(selectedTypes)) {
+			cancel('Operation cancelled.');
+			return;
+		}
+		activeTypes = new Set(selectedTypes);
+	}
+	if (activeTypes.size === 0) {
+		log.warning('No candidates match the selected profile in this scan.');
+		note(
+			'Try running with --cold-storage or adjust --cleanup-scope / include flags to expand scan coverage.',
+			'Tip',
+		);
+		outro('No changes were made.');
+		return;
+	}
+
+	const availableScopes = new Set(
+		candidates.map(candidate => candidate.cleanupScope),
+	);
+	let scopeMode: ScopeMode = 'all';
+	if (availableScopes.size === 1) {
+		scopeMode = [...availableScopes][0] as CleanupScope;
+	} else {
+		const selectedScopeMode = await select<ScopeMode>({
+			message: 'Select scope coverage:',
+			initialValue: 'all',
+			options: SCOPE_MODE_OPTIONS.filter(option =>
+				option.value === 'all'
+					? true
+					: availableScopes.has(option.value as CleanupScope),
+			),
+		});
+		if (isCancel(selectedScopeMode)) {
+			cancel('Operation cancelled.');
+			return;
+		}
+		scopeMode = selectedScopeMode;
+	}
+
+	const pathFilterInput = await text({
+		message: 'Filter paths by substring (optional):',
+		placeholder: 'Press Enter to include all candidates',
+		defaultValue: '',
+	});
+	if (isCancel(pathFilterInput)) {
+		cancel('Operation cancelled.');
+		return;
+	}
+
+	const filteredCandidates = filterCandidates(candidates, {
+		typeSet: activeTypes,
+		scopeMode,
+		query: pathFilterInput,
+	});
+	if (filteredCandidates.length === 0) {
+		log.warning('No candidates matched the selected filters.');
+		outro('No changes were made.');
+		return;
+	}
+	note(
+		[
+			`Profile: ${profile}`,
+			`Scope filter: ${scopeMode}`,
+			`Path filter: ${pathFilterInput.trim() ? pathFilterInput.trim() : '(none)'}`,
+			`Candidates in view: ${filteredCandidates.length} (${human(getTotalSize(filteredCandidates))})`,
+		].join('\n'),
+		'Selection filters',
 	);
 
 	const sortBy = await select<SortMode>({
@@ -186,7 +430,7 @@ export const runInteractiveApp = async ({
 		return;
 	}
 
-	const sortedCandidates = sortCandidates(candidates, sortBy);
+	const sortedCandidates = sortCandidates(filteredCandidates, sortBy);
 	const defaultSelections = [
 		...selectAlwaysDeletePaths(
 			sortedCandidates.map(candidate => ({path: candidate.path})),

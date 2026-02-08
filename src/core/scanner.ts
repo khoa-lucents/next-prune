@@ -168,25 +168,6 @@ const findCustomDistDir = async (
 	}
 };
 
-const findNodeModulesCacheArtifacts = async (
-	nodeModulesPath: string,
-): Promise<string[]> => {
-	const cachePath = path.join(nodeModulesPath, '.cache');
-
-	try {
-		const entries = await fs.readdir(cachePath, {withFileTypes: true});
-		return entries
-			.filter(
-				entry =>
-					entry.isDirectory() &&
-					(entry.name === 'next' || entry.name === 'turbopack'),
-			)
-			.map(entry => path.resolve(path.join(cachePath, entry.name)));
-	} catch {
-		return [];
-	}
-};
-
 const findProjectLocalPmCacheCandidates = async (
 	directory: string,
 ): Promise<string[]> => {
@@ -456,22 +437,13 @@ export const scanArtifacts = async (
 
 				specialChecks.push(
 					(async () => {
-						if (scanRoot.scope === 'workspace') {
-							await addCandidate(containedPath.path, {
-								cleanupScope: 'workspace',
-								cleanupType: 'workspace-node-modules',
-							});
-						}
-
-						const nodeModulesArtifacts = await findNodeModulesCacheArtifacts(
-							containedPath.path,
-						);
-						for (const artifactPath of nodeModulesArtifacts) {
-							await addCandidate(artifactPath, {
-								cleanupScope: scanRoot.scope,
-								cleanupType: 'artifact',
-							});
-						}
+						await addCandidate(containedPath.path, {
+							cleanupScope: scanRoot.scope,
+							cleanupType:
+								scanRoot.scope === 'workspace'
+									? 'workspace-node-modules'
+									: 'artifact',
+						});
 					})(),
 				);
 				continue;

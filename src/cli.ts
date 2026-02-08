@@ -38,9 +38,11 @@ const cli = meow(
 	  --cwd=<path>  Directory to scan (default: current working dir)
 	  --list        Non-interactive list of artifacts and sizes, then exit
 	  --json        Output JSON (implies --list)
+	  --cold-storage
+	                  Aggressive slim mode for archival/cold-storage cleanup
 	  --monorepo    Scan as a monorepo/workspace root
 	  --cleanup-scope=<scope>
-	                  Cleanup scope (e.g. all, safe, node-modules, pm-caches)
+	                  Cleanup scope (e.g. all, cold-storage, safe, node-modules, pm-caches)
 	  --no-node-modules
 	                  Exclude node_modules candidates
 	  --no-pm-caches
@@ -56,6 +58,7 @@ const cli = meow(
 	  $ next-prune --dry-run
 	  $ next-prune -y --cwd=./packages
 	  $ next-prune --yes --cleanup-scope=safe
+	  $ next-prune --yes --apply --cold-storage
 	  $ next-prune --yes --apply --monorepo
 	`,
 	{
@@ -78,6 +81,10 @@ const cli = meow(
 				default: false,
 			},
 			json: {
+				type: 'boolean',
+				default: false,
+			},
+			coldStorage: {
 				type: 'boolean',
 				default: false,
 			},
@@ -224,6 +231,7 @@ const main = async (): Promise<void> => {
 	const dryRun = Boolean(cli.flags.dryRun);
 	const forceYes = Boolean(cli.flags.yes);
 	const apply = Boolean(cli.flags.apply);
+	const coldStorage = Boolean(cli.flags.coldStorage);
 	const config = await loadConfig(cwd);
 	const maxDepthFlag = cli.flags.maxDepth;
 	if (
@@ -243,12 +251,16 @@ const main = async (): Promise<void> => {
 		? false
 		: argv.includes('--node-modules')
 			? true
-			: (config.includeNodeModules ?? true);
+			: coldStorage
+				? true
+				: (config.includeNodeModules ?? true);
 	const includeProjectLocalPmCaches = argv.includes('--no-pm-caches')
 		? false
 		: argv.includes('--pm-caches')
 			? true
-			: (config.includeProjectLocalPmCaches ?? true);
+			: coldStorage
+				? true
+				: (config.includeProjectLocalPmCaches ?? true);
 
 	const cleanupScopeFromConfig =
 		Array.isArray(config.cleanupScopes) && config.cleanupScopes.length > 0
@@ -258,16 +270,20 @@ const main = async (): Promise<void> => {
 		typeof cli.flags.cleanupScope === 'string' &&
 		cli.flags.cleanupScope.trim().length > 0
 			? cli.flags.cleanupScope.trim()
-			: cleanupScopeFromConfig;
+			: coldStorage
+				? 'cold-storage'
+				: cleanupScopeFromConfig;
 	const scanOptions: ResolvedScanOptions = {
-		monorepoMode: cli.flags.monorepo ? 'on' : config.monorepoMode,
+		monorepoMode:
+			cli.flags.monorepo || coldStorage ? 'on' : config.monorepoMode,
 		cleanupScope,
 		cleanupScopes: parseScannerCleanupScopes(cleanupScope),
 		includeNodeModules,
 		includeProjectLocalPmCaches,
-		workspaceDiscoveryMode: cli.flags.workspaceDetect
-			? 'manifest-fallback'
-			: config.workspaceDiscoveryMode,
+		workspaceDiscoveryMode:
+			cli.flags.workspaceDetect || coldStorage
+				? 'manifest-fallback'
+				: config.workspaceDiscoveryMode,
 		maxDepth,
 	};
 
