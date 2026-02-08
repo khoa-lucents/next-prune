@@ -2,6 +2,7 @@
 
 import {expect, test} from 'bun:test';
 import {testRender} from '@opentui/react/test-utils';
+import {act} from 'react';
 import App from '../../src/app.js';
 import {ConfirmModal} from '../../src/ui/confirm-modal.js';
 
@@ -20,7 +21,9 @@ test('App renders core layout in empty state', async () => {
 	);
 
 	try {
-		await setup.renderOnce();
+		await act(async () => {
+			await setup.renderOnce();
+		});
 		const frame = setup.captureCharFrame();
 
 		expect(frame).toContain('Next');
@@ -29,7 +32,9 @@ test('App renders core layout in empty state', async () => {
 		expect(frame).toContain('artifacts');
 		expect(frame).toContain('found.');
 	} finally {
-		setup.renderer.destroy();
+		await act(async () => {
+			setup.renderer.destroy();
+		});
 	}
 });
 
@@ -52,7 +57,9 @@ test('ConfirmModal renders confirmation details', async () => {
 	);
 
 	try {
-		await setup.renderOnce();
+		await act(async () => {
+			await setup.renderOnce();
+		});
 		const frame = setup.captureCharFrame();
 
 		expect(frame).toContain('Confirm Deletion');
@@ -62,6 +69,8 @@ test('ConfirmModal renders confirmation details', async () => {
 		expect(frame).toContain('[NODE 1]');
 		expect(frame).toContain('--apply');
 	} finally {
-		setup.renderer.destroy();
+		await act(async () => {
+			setup.renderer.destroy();
+		});
 	}
 });
