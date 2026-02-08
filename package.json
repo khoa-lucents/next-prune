@@ -1,6 +1,6 @@
 {
 	"name": "next-prune",
-	"version": "1.7.0",
+	"version": "1.8.0",
 	"description": "Interactive Clack CLI to prune Next.js build artifacts and caches to free disk space",
 	"license": "MIT",
 	"author": "next-prune contributors",
