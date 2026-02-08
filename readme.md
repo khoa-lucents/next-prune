@@ -30,11 +30,12 @@
 
 **Features:**
 
-- 🎯 **New:** Modern Dashboard UI with statistical overview
+- 🎯 **New:** OpenTUI command-center UI with dedicated list/details panes
 - 🔍 Scans recursively for Next.js, Vercel, and Turborepo build artifacts
 - 🧭 Detects custom Next.js build output via `distDir` in `next.config.*` (including Next.js 16 projects)
 - 📊 Shows disk usage for each directory found
-- ⇅ **New:** Sort artifacts by Size, Age, or Path
+- ⇅ Sort artifacts by Size, Age, or Path
+- 🔎 Inline search/filter and keyboard-first navigation
 - ✅ Select multiple directories for batch deletion
 - 🚀 Non-interactive modes for scripting (`--list`, `--json`)
 - 🧱 Monorepo/workspace cleanup controls (`--monorepo`, `--cleanup-scope`, `--workspace-detect`)
@@ -130,7 +131,7 @@ bun run test:pilotty
 What it validates:
 
 - OpenTUI app launches in a real PTY session
-- keyboard navigation updates screen state (`S`, `D`, `N`, `Y`, `Q`)
+- keyboard navigation updates screen state (`t`, `d`, `n`, `y`, `q`)
 - confirm modal opens/cancels correctly
 - confirmed deletion actually removes an artifact directory
 

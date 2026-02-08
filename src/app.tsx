@@ -1,37 +1,40 @@
 /** @jsxImportSource @opentui/react */
 
-import path from 'node:path';
 import process from 'node:process';
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useReducer, useRef} from 'react';
 import {useKeyboard, useRenderer, useTerminalDimensions} from '@opentui/react';
 import {findUnusedAssets} from './core/asset-scanner.js';
-import {
-	DEFAULT_CONFIG,
-	filterNeverDelete,
-	selectAlwaysDeletePaths,
-} from './core/config.js';
+import {filterNeverDelete, selectAlwaysDeletePaths} from './core/config.js';
 import {deleteItems} from './core/delete.js';
 import {human} from './core/format.js';
 import {getArtifactStats, scanArtifacts} from './core/scanner.js';
-import type {
-	CleanupScope,
-	PruneConfig,
-	RuntimeScanOptions,
-	ScannerOptions,
-	ScanItem,
-} from './core/types.js';
-import {ArtifactList} from './ui/artifact-list.js';
-import {ConfirmModal} from './ui/confirm-modal.js';
-import {Dashboard} from './ui/dashboard.js';
-import {Footer} from './ui/footer.js';
-import {Header} from './ui/header.js';
-import type {
-	ArtifactItem,
-	ArtifactStatus,
-	CandidateType,
-	ShortcutHint,
-	SortMode,
-} from './ui/types.js';
+import type {PruneConfig, RuntimeScanOptions, ScanItem} from './core/types.js';
+import {SummaryStrip} from './ui/chrome/summary-strip.js';
+import {StatusLine} from './ui/chrome/status-line.js';
+import {LayoutShell} from './ui/layout-shell.js';
+import {ConfirmDeleteModal} from './ui/overlays/confirm-delete-modal.js';
+import {HelpOverlay} from './ui/overlays/help-overlay.js';
+import {DetailsPane} from './ui/panes/details-pane.js';
+import {CandidateListPane} from './ui/panes/candidate-list-pane.js';
+import {SearchBar} from './ui/search/search-bar.js';
+import {uiReducer, createInitialUiState} from './ui/state/reducer.js';
+import {
+	buildMetrics,
+	buildSelectedTypeCounts,
+	buildViewWindow,
+	filterItemsByQuery,
+	sortItems,
+} from './ui/state/selectors.js';
+import type {ArtifactItem, ArtifactStatus} from './ui/types.js';
+import {
+	buildCleanupScopeLabel,
+	clampIndex,
+	normalizeItem,
+	resolveAllowedCandidateTypes,
+	resolveConfig,
+	resolveScanOptions,
+	sumItemSizes,
+} from './ui/view-model/candidates.js';
 
 interface AppProps {
 	cwd?: string;
@@ -40,295 +43,26 @@ interface AppProps {
 	testMode?: boolean;
 	config?: Partial<PruneConfig>;
 	scanOptions?: RuntimeScanOptions;
+	testItems?: Array<ScanItem & {status?: ArtifactStatus}>;
 }
 
-type ScannerItem = ScanItem & {status?: ArtifactStatus};
-
-type StatusState = {
-	message: string;
-	kind: 'error' | 'success' | 'info';
-} | null;
-
-type ResolvedScanOptions = {
-	cleanupScope?: string;
-	scannerOptions: ScannerOptions;
-};
-
-const SORT_MODES: SortMode[] = ['size', 'age', 'path'];
-const ALL_CANDIDATE_TYPES: CandidateType[] = [
-	'artifact',
-	'asset',
-	'node_modules',
-	'pm-cache',
-];
-const NODE_MODULES_PATTERN = /(^|\/)node_modules(\/|$)/;
-const PM_CACHE_PATTERNS = [
-	/(^|\/)\.pnpm-store(\/|$)/,
-	/(^|\/)\.pnpm-cache(\/|$)/,
-	/(^|\/)\.npm(\/|$)/,
-	/(^|\/)\.yarn\/cache(\/|$)/,
-	/(^|\/)\.yarn\/unplugged(\/|$)/,
-];
-const CLEANUP_SCOPE_MAP: Record<string, CandidateType[]> = {
-	default: ALL_CANDIDATE_TYPES,
-	all: ALL_CANDIDATE_TYPES,
-	project: ALL_CANDIDATE_TYPES,
-	workspace: ALL_CANDIDATE_TYPES,
-	safe: ['artifact', 'asset'],
-	artifacts: ['artifact', 'asset'],
-	artifact: ['artifact', 'asset'],
-	'node-modules': ['node_modules'],
-	node_modules: ['node_modules'],
-	nodemodules: ['node_modules'],
-	'pm-caches': ['pm-cache'],
-	pm_caches: ['pm-cache'],
-	pmcaches: ['pm-cache'],
-};
-
-const clampIndex = (nextIndex: number, totalItems: number) => {
-	if (totalItems <= 0) return 0;
-	return Math.max(0, Math.min(totalItems - 1, nextIndex));
-};
-
-const normalizePathForMatching = (value: string): string =>
-	value.split(path.sep).join('/').toLowerCase();
-
-const resolveCandidateType = (
-	item: Pick<ScanItem, 'path' | 'type' | 'cleanupType'>,
-): CandidateType => {
-	if (item.type === 'asset' || item.cleanupType === 'asset') return 'asset';
-	if (item.cleanupType === 'pm-cache') return 'pm-cache';
-	if (item.cleanupType === 'workspace-node-modules') return 'node_modules';
-
-	const normalizedPath = normalizePathForMatching(item.path);
-	if (NODE_MODULES_PATTERN.test(normalizedPath)) return 'node_modules';
-	if (PM_CACHE_PATTERNS.some(pattern => pattern.test(normalizedPath))) {
-		return 'pm-cache';
-	}
-
-	return 'artifact';
-};
-
-const resolveScanOptions = (
-	options: RuntimeScanOptions | undefined,
-	config: PruneConfig,
-): ResolvedScanOptions => {
-	const cleanupScopeFromConfig =
-		Array.isArray(config.cleanupScopes) && config.cleanupScopes.length > 0
-			? config.cleanupScopes.join(',')
-			: undefined;
-	const cleanupScope =
-		typeof options?.cleanupScope === 'string' &&
-		options.cleanupScope.trim().length > 0
-			? options.cleanupScope.trim()
-			: cleanupScopeFromConfig;
-	const configMaxDepth =
-		typeof config.maxScanDepth === 'number' &&
-		Number.isFinite(config.maxScanDepth) &&
-		config.maxScanDepth >= 0
-			? Math.floor(config.maxScanDepth)
-			: undefined;
-	const optionMaxDepth =
-		typeof options?.maxDepth === 'number' &&
-		Number.isFinite(options.maxDepth) &&
-		options.maxDepth >= 0
-			? Math.floor(options.maxDepth)
-			: undefined;
-
-	return {
-		cleanupScope,
-		scannerOptions: {
-			skipDirs: options?.skipDirs,
-			monorepoMode: options?.monorepoMode ?? config.monorepoMode,
-			workspaceDiscoveryMode:
-				options?.workspaceDiscoveryMode ?? config.workspaceDiscoveryMode,
-			cleanupScopes:
-				options?.cleanupScopes === undefined
-					? parseScannerCleanupScopes(cleanupScope)
-					: [...options.cleanupScopes],
-			includeNodeModules:
-				typeof options?.includeNodeModules === 'boolean'
-					? options.includeNodeModules
-					: config.includeNodeModules,
-			includeProjectLocalPmCaches:
-				typeof options?.includeProjectLocalPmCaches === 'boolean'
-					? options.includeProjectLocalPmCaches
-					: config.includeProjectLocalPmCaches,
-			maxDepth: optionMaxDepth ?? configMaxDepth,
-		},
-	};
-};
-
-const resolveAllowedCandidateTypes = (
-	options: ResolvedScanOptions,
-): Set<CandidateType> => {
-	const fromScope = new Set<CandidateType>();
-	const cleanupScope = options.cleanupScope?.trim();
-
-	if (!cleanupScope) {
-		for (const candidateType of ALL_CANDIDATE_TYPES) {
-			fromScope.add(candidateType);
-		}
-	} else {
-		for (const rawScopeToken of cleanupScope.split(',')) {
-			const normalizedToken = rawScopeToken.trim().toLowerCase();
-			if (!normalizedToken) continue;
-			const mappedTypes = CLEANUP_SCOPE_MAP[normalizedToken];
-			if (!mappedTypes) continue;
-			for (const mappedType of mappedTypes) {
-				fromScope.add(mappedType);
-			}
-		}
-	}
-
-	if (fromScope.size === 0) {
-		for (const candidateType of ALL_CANDIDATE_TYPES) {
-			fromScope.add(candidateType);
-		}
-	}
-
-	if (options.scannerOptions.includeNodeModules === false) {
-		fromScope.delete('node_modules');
-	}
-
-	if (options.scannerOptions.includeProjectLocalPmCaches === false) {
-		fromScope.delete('pm-cache');
-	}
-
-	return fromScope;
-};
-
-const parseScannerCleanupScopes = (
-	cleanupScope: string | undefined,
-): CleanupScope[] | undefined => {
-	if (!cleanupScope || cleanupScope.trim().length === 0) {
-		return undefined;
-	}
-
-	const resolved = new Set<CleanupScope>();
-	for (const rawScopeToken of cleanupScope.split(',')) {
-		const normalizedToken = rawScopeToken.trim().toLowerCase();
-		if (!normalizedToken) continue;
-		if (normalizedToken === 'all') {
-			resolved.add('project');
-			resolved.add('workspace');
-			continue;
-		}
-		if (normalizedToken === 'project' || normalizedToken === 'workspace') {
-			resolved.add(normalizedToken);
-		}
-	}
-
-	return resolved.size > 0 ? [...resolved] : undefined;
-};
-
-const buildCleanupScopeLabel = (options: ResolvedScanOptions): string => {
-	const rawScope = options.cleanupScope ?? 'default';
-	const normalizedScope = rawScope.replaceAll(' ', '');
-	const scope =
-		normalizedScope === 'project,workspace' ||
-		normalizedScope === 'workspace,project'
-			? 'all'
-			: rawScope;
-	const modifiers: string[] = [];
-	if (options.scannerOptions.includeNodeModules === false) {
-		modifiers.push('no-node-modules');
-	}
-	if (options.scannerOptions.includeProjectLocalPmCaches === false) {
-		modifiers.push('no-pm-caches');
-	}
-	return modifiers.length === 0 ? scope : `${scope} (${modifiers.join(',')})`;
-};
-
-const normalizeItem = (raw: ScannerItem, cwd: string): ArtifactItem => ({
-	path: raw.path,
-	relPath: path.relative(cwd, raw.path) || '.',
-	size: typeof raw.size === 'number' ? raw.size : 0,
-	mtime: raw.mtime ? new Date(raw.mtime) : new Date(0),
-	isDirectory: raw.isDirectory !== false,
-	type: raw.type,
-	candidateType: resolveCandidateType(raw),
-	status: raw.status,
-});
-
-const statusColor = (kind: NonNullable<StatusState>['kind']) => {
-	if (kind === 'error') return 'red';
-	if (kind === 'success') return 'green';
-	return 'yellow';
-};
-
-const buildShortcuts = (sortBy: SortMode): ShortcutHint[][] => [
-	[
-		{key: 'Up/Down', label: 'move'},
-		{key: 'PgUp/PgDn', label: 'page'},
-		{key: 'Home/End', label: 'jump'},
-	],
-	[
-		{key: 'Space', label: 'select'},
-		{key: 'A', label: 'all'},
-		{key: 'C', label: 'clear'},
-	],
-	[
-		{key: 'S', label: `sort (${sortBy})`},
-		{key: 'R', label: 'rescan'},
-		{key: 'D/Enter', label: 'delete'},
-		{key: 'Q/Esc', label: 'quit'},
-	],
-];
-
-const resolveConfig = (config?: Partial<PruneConfig>): PruneConfig => ({
-	alwaysDelete: Array.isArray(config?.alwaysDelete)
-		? config.alwaysDelete
-		: DEFAULT_CONFIG.alwaysDelete,
-	neverDelete: Array.isArray(config?.neverDelete)
-		? config.neverDelete
-		: DEFAULT_CONFIG.neverDelete,
-	checkUnusedAssets:
-		typeof config?.checkUnusedAssets === 'boolean'
-			? config.checkUnusedAssets
-			: DEFAULT_CONFIG.checkUnusedAssets,
-	monorepoMode:
-		typeof config?.monorepoMode === 'string'
-			? config.monorepoMode
-			: DEFAULT_CONFIG.monorepoMode,
-	workspaceDiscoveryMode:
-		typeof config?.workspaceDiscoveryMode === 'string'
-			? config.workspaceDiscoveryMode
-			: DEFAULT_CONFIG.workspaceDiscoveryMode,
-	cleanupScopes: Array.isArray(config?.cleanupScopes)
-		? config.cleanupScopes
-		: DEFAULT_CONFIG.cleanupScopes,
-	includeNodeModules:
-		typeof config?.includeNodeModules === 'boolean'
-			? config.includeNodeModules
-			: DEFAULT_CONFIG.includeNodeModules,
-	includeProjectLocalPmCaches:
-		typeof config?.includeProjectLocalPmCaches === 'boolean'
-			? config.includeProjectLocalPmCaches
-			: DEFAULT_CONFIG.includeProjectLocalPmCaches,
-	maxScanDepth:
-		typeof config?.maxScanDepth === 'number' &&
-		Number.isFinite(config.maxScanDepth) &&
-		config.maxScanDepth >= 0
-			? Math.floor(config.maxScanDepth)
-			: DEFAULT_CONFIG.maxScanDepth,
-});
-
-const sumItemSizes = (items: readonly ArtifactItem[]): number =>
-	items.reduce((total, item) => total + item.size, 0);
+const parseErrorMessage = (error: unknown, fallback: string): string =>
+	String(error instanceof Error ? error.message : (error ?? fallback));
 
 export default function App({
 	cwd = process.cwd(),
 	dryRun = false,
 	confirmImmediately = false,
 	testMode = false,
-	config = DEFAULT_CONFIG,
+	config,
 	scanOptions,
+	testItems,
 }: AppProps) {
 	const renderer = useRenderer();
 	const {width, height} = useTerminalDimensions();
-	const terminalWidth = Math.max(40, width || 80);
-	const terminalHeight = Math.max(18, height || 24);
+	const terminalWidth = Math.max(72, width || 100);
+	const terminalHeight = Math.max(20, height || 28);
+
 	const resolvedConfig = useMemo(() => resolveConfig(config), [config]);
 	const resolvedScanOptions = useMemo(
 		() => resolveScanOptions(scanOptions, resolvedConfig),
@@ -343,131 +77,75 @@ export default function App({
 		[resolvedScanOptions],
 	);
 
-	const [items, setItems] = useState<ArtifactItem[]>([]);
-	const [loading, setLoading] = useState(!testMode);
-	const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-	const [focusedIndex, setFocusedIndex] = useState(0);
-	const [sortBy, setSortBy] = useState<SortMode>('size');
-	const [confirmOpen, setConfirmOpen] = useState(false);
-	const [status, setStatus] = useState<StatusState>(null);
+	const [state, dispatch] = useReducer(
+		uiReducer,
+		createInitialUiState({startLoading: !testMode}),
+	);
+	const stateRef = useRef(state);
+	useEffect(() => {
+		stateRef.current = state;
+	}, [state]);
 
-	const sortedItems = useMemo(() => {
-		const next = [...items];
-		next.sort((left, right) => {
-			if (sortBy === 'size') return right.size - left.size;
-			if (sortBy === 'age') return right.mtime.getTime() - left.mtime.getTime();
-			return left.relPath.localeCompare(right.relPath);
-		});
-		return next;
-	}, [items, sortBy]);
-
-	const itemByPath = useMemo(
-		() => new Map(items.map(item => [item.path, item])),
-		[items],
+	const sortedItems = useMemo(
+		() => sortItems(state.items, state.sortBy),
+		[state.items, state.sortBy],
+	);
+	const visibleItems = useMemo(
+		() => filterItemsByQuery(sortedItems, state.query),
+		[sortedItems, state.query],
+	);
+	const metrics = useMemo(
+		() => buildMetrics(state.items, state.selectedPaths),
+		[state.items, state.selectedPaths],
+	);
+	const selectedTypeCounts = useMemo(
+		() => buildSelectedTypeCounts(state.items, state.selectedPaths),
+		[state.items, state.selectedPaths],
 	);
 
-	const metrics = useMemo(() => {
-		let foundCount = 0;
-		let totalSize = 0;
-		let selectedSize = 0;
-		let nodeModulesCount = 0;
-		let pmCachesCount = 0;
-		for (const item of items) {
-			if (item.status === 'deleted') continue;
-			foundCount++;
-			totalSize += item.size;
-			if (item.candidateType === 'node_modules') {
-				nodeModulesCount++;
-			}
-			if (item.candidateType === 'pm-cache') {
-				pmCachesCount++;
-			}
-			if (selectedPaths.has(item.path)) {
-				selectedSize += item.size;
-			}
-		}
+	useEffect(() => {
+		dispatch({type: 'ENSURE_CURSOR', total: visibleItems.length});
+	}, [visibleItems.length]);
 
-		return {
-			foundCount,
-			totalSize,
-			selectedSize,
-			nodeModulesCount,
-			pmCachesCount,
-		};
-	}, [items, selectedPaths]);
-
-	const selectedTypeCounts = useMemo(() => {
-		const counts = {
-			artifact: 0,
-			asset: 0,
-			nodeModules: 0,
-			pmCaches: 0,
-		};
-
-		for (const item of items) {
-			if (item.status === 'deleted' || !selectedPaths.has(item.path)) continue;
-
-			if (item.candidateType === 'asset') {
-				counts.asset++;
-				continue;
-			}
-
-			if (item.candidateType === 'node_modules') {
-				counts.nodeModules++;
-				continue;
-			}
-
-			if (item.candidateType === 'pm-cache') {
-				counts.pmCaches++;
-				continue;
-			}
-
-			counts.artifact++;
-		}
-
-		return counts;
-	}, [items, selectedPaths]);
-
-	const selectedIndices = useMemo(() => {
-		const next = new Set<number>();
-		for (const [index, item] of sortedItems.entries()) {
-			if (selectedPaths.has(item.path)) {
-				next.add(index);
-			}
-		}
-
-		return next;
-	}, [selectedPaths, sortedItems]);
-
-	const listHeight = useMemo(() => {
-		const base = Math.max(5, terminalHeight - 12);
-		return status ? Math.max(3, base - 2) : base;
-	}, [status, terminalHeight]);
-
-	const viewWindow = useMemo(() => {
-		const total = sortedItems.length;
-		const half = Math.floor(listHeight / 2);
-		let start = Math.max(0, focusedIndex - half);
-		const end = start + listHeight;
-		if (end > total) {
-			start = Math.max(0, total - listHeight);
-		}
-
-		return {
-			start,
-			end: Math.min(start + listHeight, total),
-		};
-	}, [focusedIndex, listHeight, sortedItems.length]);
-
-	const shortcuts = useMemo(() => buildShortcuts(sortBy), [sortBy]);
+	const focusedItem = visibleItems[state.cursorIndex];
+	const compactLayout = terminalWidth < 110;
+	const listHeight = Math.max(5, terminalHeight - (compactLayout ? 24 : 12));
+	const viewWindow = useMemo(
+		() => buildViewWindow(state.cursorIndex, listHeight, visibleItems.length),
+		[state.cursorIndex, listHeight, visibleItems.length],
+	);
 
 	const quit = useCallback(() => {
 		renderer.destroy();
 	}, [renderer]);
 
+	const applyInitialSelection = useCallback(
+		(items: ArtifactItem[]): string[] => {
+			if (confirmImmediately) {
+				return items
+					.filter(item => item.status !== 'deleted')
+					.map(item => item.path);
+			}
+			if (resolvedConfig.alwaysDelete.length === 0) {
+				return [];
+			}
+			return [
+				...selectAlwaysDeletePaths(
+					items.filter(item => item.status !== 'deleted'),
+					cwd,
+					resolvedConfig.alwaysDelete,
+				),
+			];
+		},
+		[confirmImmediately, cwd, resolvedConfig.alwaysDelete],
+	);
+
 	const collectItems = useCallback(async (): Promise<ArtifactItem[]> => {
 		const scannerOptions = resolvedScanOptions.scannerOptions;
-		let next: ScannerItem[] = await scanArtifacts(cwd, scannerOptions);
+		let next: Array<ScanItem & {status?: ArtifactStatus}> = await scanArtifacts(
+			cwd,
+			scannerOptions,
+		);
 
 		if (resolvedConfig.checkUnusedAssets) {
 			const assetPaths = await findUnusedAssets(cwd, {
@@ -497,196 +175,282 @@ export default function App({
 		resolvedScanOptions,
 	]);
 
-	const runScan = useCallback(async () => {
-		setLoading(true);
-		setStatus(null);
+	const finalizeScan = useCallback(
+		(next: ArtifactItem[]) => {
+			const selectedPaths = applyInitialSelection(next);
+			dispatch({type: 'SCAN_SUCCESS', items: next, selectedPaths});
+			if (confirmImmediately && selectedPaths.length > 0) {
+				dispatch({type: 'OPEN_CONFIRM'});
+			}
+		},
+		[applyInitialSelection, confirmImmediately],
+	);
 
+	const runScan = useCallback(async () => {
+		dispatch({type: 'SCAN_START'});
 		try {
 			const next = await collectItems();
-			setItems(next);
-			setFocusedIndex(0);
-			setSelectedPaths(previous => {
-				const available = new Set(next.map(item => item.path));
-				return new Set(
-					[...previous].filter(itemPath => available.has(itemPath)),
-				);
-			});
+			finalizeScan(next);
 		} catch (error) {
-			setStatus({
-				kind: 'error',
-				message: String(
-					error instanceof Error ? error.message : (error ?? 'Scan failed'),
-				),
+			dispatch({
+				type: 'SCAN_FAILURE',
+				message: parseErrorMessage(error, 'Scan failed'),
 			});
-		} finally {
-			setLoading(false);
 		}
-	}, [collectItems]);
+	}, [collectItems, finalizeScan]);
 
-	const moveFocusBy = useCallback(
-		(delta: number) => {
-			setFocusedIndex(previous =>
-				clampIndex(previous + delta, sortedItems.length),
-			);
-		},
-		[sortedItems.length],
-	);
-
-	const jumpFocusTo = useCallback(
-		(target: number) => {
-			setFocusedIndex(clampIndex(target, sortedItems.length));
-		},
-		[sortedItems.length],
-	);
-
-	const toggleFocusedSelection = useCallback(() => {
-		const focusedItem = sortedItems[focusedIndex];
-		if (!focusedItem || focusedItem.status === 'deleted') return;
-
-		setSelectedPaths(previous => {
-			const next = new Set(previous);
-			if (next.has(focusedItem.path)) {
-				next.delete(focusedItem.path);
-			} else {
-				next.add(focusedItem.path);
-			}
-
-			return next;
-		});
-	}, [focusedIndex, sortedItems]);
-
-	const selectAll = useCallback(() => {
-		const paths = sortedItems
-			.filter(item => item.status !== 'deleted')
-			.map(item => item.path);
-		setSelectedPaths(new Set(paths));
-	}, [sortedItems]);
-
-	const cycleSort = useCallback(() => {
-		setSortBy(previous => {
-			const nextIndex = (SORT_MODES.indexOf(previous) + 1) % SORT_MODES.length;
-			return SORT_MODES[nextIndex];
-		});
-	}, []);
-
-	const openDeleteConfirm = useCallback(() => {
-		if (selectedPaths.size > 0) {
-			setConfirmOpen(true);
+	useEffect(() => {
+		if (!testMode) {
+			void runScan();
 			return;
 		}
 
-		const focusedItem = sortedItems[focusedIndex];
-		if (!focusedItem || focusedItem.status === 'deleted') return;
-		setSelectedPaths(new Set([focusedItem.path]));
-		setConfirmOpen(true);
-	}, [focusedIndex, selectedPaths.size, sortedItems]);
+		if (testItems) {
+			const normalized = filterNeverDelete(
+				testItems,
+				cwd,
+				resolvedConfig.neverDelete,
+			)
+				.map(item => normalizeItem(item, cwd))
+				.filter(item => allowedCandidateTypes.has(item.candidateType));
+			finalizeScan(normalized);
+		}
+	}, [
+		allowedCandidateTypes,
+		cwd,
+		finalizeScan,
+		resolvedConfig.neverDelete,
+		runScan,
+		testItems,
+		testMode,
+	]);
+
+	const focusRow = useCallback(
+		(index: number) => {
+			dispatch({type: 'SET_FOCUS_ZONE', zone: 'list'});
+			dispatch({type: 'SET_CURSOR', index, total: visibleItems.length});
+		},
+		[visibleItems.length],
+	);
+
+	const toggleRowSelection = useCallback(
+		(index: number) => {
+			const item = visibleItems[index];
+			if (!item || item.status === 'deleted') return;
+			focusRow(index);
+			dispatch({type: 'TOGGLE_SELECTION', path: item.path});
+		},
+		[focusRow, visibleItems],
+	);
+
+	const toggleFocusedSelection = useCallback(() => {
+		const currentState = stateRef.current;
+		const item = visibleItems[currentState.cursorIndex];
+		if (!item || item.status === 'deleted') return;
+		dispatch({type: 'TOGGLE_SELECTION', path: item.path});
+	}, [visibleItems]);
+
+	const selectAllVisible = useCallback(() => {
+		dispatch({
+			type: 'SELECT_PATHS',
+			paths: visibleItems
+				.filter(item => item.status !== 'deleted')
+				.map(item => item.path),
+		});
+	}, [visibleItems]);
+
+	const openDeleteConfirm = useCallback(() => {
+		const currentState = stateRef.current;
+		if (currentState.selectedPaths.size === 0) {
+			const fallbackItem = visibleItems[currentState.cursorIndex];
+			if (!fallbackItem || fallbackItem.status === 'deleted') {
+				dispatch({
+					type: 'SET_STATUS',
+					status: {
+						kind: 'info',
+						message: 'Select at least one candidate before deleting.',
+					},
+				});
+				return;
+			}
+			dispatch({type: 'SELECT_PATHS', paths: [fallbackItem.path]});
+		}
+		dispatch({type: 'OPEN_CONFIRM'});
+	}, [visibleItems]);
 
 	const performDeletion = useCallback(async () => {
-		const targets = [...selectedPaths]
+		const currentState = stateRef.current;
+		const itemByPath = new Map(
+			currentState.items.map(item => [item.path, item] as const),
+		);
+		const targets = [...currentState.selectedPaths]
 			.map(targetPath => itemByPath.get(targetPath))
 			.filter((item): item is ArtifactItem =>
 				Boolean(item && item.status !== 'deleted'),
 			);
 
 		if (targets.length === 0) {
-			setConfirmOpen(false);
+			dispatch({type: 'CLOSE_CONFIRM'});
 			return;
 		}
 
-		const targetSet = new Set(targets.map(item => item.path));
+		const targetPaths = targets.map(item => item.path);
 
 		if (dryRun) {
-			setItems(previous =>
-				previous.map(item =>
-					targetSet.has(item.path) ? {...item, status: 'dry-run'} : item,
-				),
-			);
-			setStatus({
-				kind: 'success',
-				message: `Dry-run: would delete ${targets.length} items (${human(sumItemSizes(targets))})`,
+			dispatch({
+				type: 'MARK_ITEMS_STATUS',
+				paths: targetPaths,
+				status: 'dry-run',
 			});
-			setSelectedPaths(new Set());
-			setConfirmOpen(false);
+			dispatch({type: 'CLEAR_SELECTION'});
+			dispatch({type: 'CLOSE_CONFIRM'});
+			dispatch({
+				type: 'SET_STATUS',
+				status: {
+					kind: 'success',
+					message: `Dry-run: would delete ${targets.length} items (${human(sumItemSizes(targets))})`,
+				},
+			});
 			return;
 		}
 
-		setItems(previous =>
-			previous.map(item =>
-				targetSet.has(item.path) ? {...item, status: 'deleting'} : item,
-			),
-		);
+		dispatch({
+			type: 'MARK_ITEMS_STATUS',
+			paths: targetPaths,
+			status: 'deleting',
+		});
 
-		const summary = await deleteItems(
-			targets.map(item => ({
-				path: item.path,
-				size: item.size,
-			})),
-		);
+		try {
+			const summary = await deleteItems(
+				targets.map(item => ({
+					path: item.path,
+					size: item.size,
+				})),
+			);
 
-		const succeeded = new Set<string>();
-		const failed = new Set<string>();
-		for (const result of summary.results) {
-			if (result.ok) {
-				succeeded.add(result.path);
-			} else {
-				failed.add(result.path);
+			const succeeded: string[] = [];
+			const failed: string[] = [];
+			for (const result of summary.results) {
+				if (result.ok) {
+					succeeded.push(result.path);
+				} else {
+					failed.push(result.path);
+				}
 			}
+
+			dispatch({
+				type: 'APPLY_DELETE_RESULTS',
+				succeeded,
+				failed,
+			});
+
+			if (summary.failureCount > 0 && summary.deletedCount > 0) {
+				dispatch({
+					type: 'SET_STATUS',
+					status: {
+						kind: 'info',
+						message: `Deleted ${summary.deletedCount} items (freed ${human(summary.reclaimedBytes)}), ${summary.failureCount} failed`,
+					},
+				});
+			} else if (summary.failureCount > 0) {
+				dispatch({
+					type: 'SET_STATUS',
+					status: {
+						kind: 'error',
+						message: `Failed to delete ${summary.failureCount} items`,
+					},
+				});
+			} else {
+				dispatch({
+					type: 'SET_STATUS',
+					status: {
+						kind: 'success',
+						message: `Deleted ${summary.deletedCount} items (freed ${human(summary.reclaimedBytes)})`,
+					},
+				});
+			}
+		} catch (error) {
+			dispatch({
+				type: 'MARK_ITEMS_STATUS',
+				paths: targetPaths,
+				status: 'error',
+			});
+			dispatch({
+				type: 'SET_STATUS',
+				status: {
+					kind: 'error',
+					message: parseErrorMessage(error, 'Deletion failed'),
+				},
+			});
 		}
 
-		setItems(previous =>
-			previous.map(item => {
-				if (succeeded.has(item.path)) {
-					return {...item, status: 'deleted', size: 0};
-				}
+		dispatch({type: 'CLEAR_SELECTION'});
+		dispatch({type: 'CLOSE_CONFIRM'});
+	}, [dryRun]);
 
-				if (failed.has(item.path)) {
-					return {...item, status: 'error'};
-				}
-
-				return item;
-			}),
-		);
-
-		if (summary.failureCount > 0 && summary.deletedCount > 0) {
-			setStatus({
-				kind: 'info',
-				message: `Deleted ${summary.deletedCount} items (freed ${human(summary.reclaimedBytes)}), ${summary.failureCount} failed`,
+	const moveToMatch = useCallback(
+		(direction: 1 | -1) => {
+			const currentState = stateRef.current;
+			if (!currentState.query || visibleItems.length === 0) return;
+			const nextIndex = clampIndex(
+				(currentState.cursorIndex + direction + visibleItems.length) %
+					visibleItems.length,
+				visibleItems.length,
+			);
+			dispatch({
+				type: 'SET_CURSOR',
+				index: nextIndex,
+				total: visibleItems.length,
 			});
-		} else if (summary.failureCount > 0) {
-			setStatus({
-				kind: 'error',
-				message: `Failed to delete: ${summary.results.find(result => !result.ok)?.path ?? 'unknown path'}`,
-			});
-		} else {
-			setStatus({
-				kind: 'success',
-				message: `Deleted ${summary.deletedCount} items (freed ${human(summary.reclaimedBytes)})`,
-			});
-		}
-
-		setSelectedPaths(new Set());
-		setConfirmOpen(false);
-	}, [dryRun, itemByPath, selectedPaths]);
+		},
+		[visibleItems.length],
+	);
 
 	useKeyboard(key => {
 		const keyName = String(key.name ?? '').toLowerCase();
 		const isEnter = keyName === 'enter' || keyName === 'return';
+		const isHelpKey = keyName === '?' || (keyName === '/' && key.shift);
 
-		if (confirmOpen) {
+		if (key.ctrl && keyName === 'c') {
+			quit();
+			return;
+		}
+
+		const currentState = stateRef.current;
+
+		if (currentState.helpOpen) {
+			if (keyName === 'escape' || keyName === 'q' || isHelpKey) {
+				dispatch({type: 'CLOSE_HELP'});
+			}
+			return;
+		}
+
+		if (currentState.confirmOpen) {
 			if (keyName === 'escape' || keyName === 'n') {
-				setConfirmOpen(false);
+				dispatch({type: 'CLOSE_CONFIRM'});
 				return;
 			}
 
 			if (keyName === 'y' || isEnter) {
 				void performDeletion();
 			}
-
 			return;
 		}
 
-		if (key.ctrl && keyName === 'c') {
-			quit();
+		if (isHelpKey) {
+			dispatch({type: 'TOGGLE_HELP'});
+			return;
+		}
+
+		if (currentState.focusZone === 'search') {
+			if (keyName === 'escape' || isEnter) {
+				dispatch({type: 'SET_FOCUS_ZONE', zone: 'list'});
+			}
+			return;
+		}
+
+		if (keyName === '/' && !key.shift) {
+			dispatch({type: 'SET_FOCUS_ZONE', zone: 'search'});
 			return;
 		}
 
@@ -695,58 +459,62 @@ export default function App({
 			return;
 		}
 
-		if (keyName === 'up') {
-			moveFocusBy(-1);
+		if (keyName === 'down' || keyName === 'j') {
+			dispatch({type: 'MOVE_CURSOR', delta: 1, total: visibleItems.length});
 			return;
 		}
 
-		if (keyName === 'down') {
-			moveFocusBy(1);
+		if (keyName === 'up' || keyName === 'k') {
+			dispatch({type: 'MOVE_CURSOR', delta: -1, total: visibleItems.length});
 			return;
 		}
 
-		if (keyName === 'pageup') {
-			moveFocusBy(-listHeight);
+		if ((keyName === 'g' && !key.shift) || keyName === 'home') {
+			dispatch({type: 'SET_CURSOR', index: 0, total: visibleItems.length});
 			return;
 		}
 
-		if (keyName === 'pagedown') {
-			moveFocusBy(listHeight);
+		if ((keyName === 'g' && key.shift) || keyName === 'end') {
+			dispatch({
+				type: 'SET_CURSOR',
+				index: visibleItems.length - 1,
+				total: visibleItems.length,
+			});
 			return;
 		}
 
-		if (keyName === 'home') {
-			jumpFocusTo(0);
-			return;
-		}
-
-		if (keyName === 'end') {
-			jumpFocusTo(sortedItems.length - 1);
-			return;
-		}
-
-		if (keyName === 'space') {
+		if (keyName === 'space' || keyName === 'x') {
 			toggleFocusedSelection();
 			return;
 		}
 
 		if (keyName === 'a') {
-			selectAll();
+			selectAllVisible();
 			return;
 		}
 
 		if (keyName === 'c') {
-			setSelectedPaths(new Set());
+			dispatch({type: 'CLEAR_SELECTION'});
 			return;
 		}
 
-		if (keyName === 's') {
-			cycleSort();
+		if (keyName === 't') {
+			dispatch({type: 'CYCLE_SORT'});
 			return;
 		}
 
-		if (keyName === 'r' && !loading) {
+		if (keyName === 'r' && currentState.scanPhase !== 'loading') {
 			void runScan();
+			return;
+		}
+
+		if (keyName === 'n' && key.shift) {
+			moveToMatch(-1);
+			return;
+		}
+
+		if (keyName === 'n') {
+			moveToMatch(1);
 			return;
 		}
 
@@ -755,104 +523,81 @@ export default function App({
 		}
 	});
 
-	useEffect(() => {
-		if (!testMode) {
-			void runScan();
-		}
-	}, [runScan, testMode]);
-
-	useEffect(() => {
-		if (items.length === 0 || testMode) return;
-
-		if (confirmImmediately) {
-			const allPaths = items
-				.filter(item => item.status !== 'deleted')
-				.map(item => item.path);
-			setSelectedPaths(new Set(allPaths));
-			setConfirmOpen(true);
-			return;
-		}
-
-		if (resolvedConfig.alwaysDelete.length === 0) {
-			return;
-		}
-
-		const preselected = selectAlwaysDeletePaths(
-			items.filter(item => item.status !== 'deleted'),
-			cwd,
-			resolvedConfig.alwaysDelete,
-		);
-
-		if (preselected.size > 0) {
-			setSelectedPaths(preselected);
-		}
-	}, [confirmImmediately, cwd, items, resolvedConfig.alwaysDelete, testMode]);
-
 	return (
-		<box
-			flexDirection="column"
-			padding={1}
-			height={terminalHeight}
-			width={terminalWidth}
-		>
-			<Header />
-
-			<box marginTop={1} marginBottom={1}>
-				<Dashboard
-					foundCount={metrics.foundCount}
-					totalSize={metrics.totalSize}
-					selectedCount={selectedPaths.size}
-					selectedSize={metrics.selectedSize}
-					nodeModulesCount={metrics.nodeModulesCount}
-					pmCachesCount={metrics.pmCachesCount}
-					cleanupScopeLabel={cleanupScopeLabel}
-					loading={loading}
+		<LayoutShell
+			terminalWidth={terminalWidth}
+			terminalHeight={terminalHeight}
+			summary={
+				<SummaryStrip
+					metrics={metrics}
+					scanPhase={state.scanPhase}
 					cwd={cwd}
-					terminalWidth={terminalWidth}
+					cleanupScopeLabel={cleanupScopeLabel}
+					sortBy={state.sortBy}
+					query={state.query}
 				/>
-			</box>
-
-			<box
-				flexGrow={1}
-				border
-				borderStyle="rounded"
-				borderColor={selectedPaths.size > 0 ? 'yellow' : 'gray'}
-				paddingLeft={1}
-				paddingRight={1}
-				flexDirection="column"
-			>
-				{status ? (
-					<box border borderColor={statusColor(status.kind)} marginBottom={1}>
-						<text>
-							<span fg={statusColor(status.kind)}>{status.message}</span>
-						</text>
-					</box>
-				) : null}
-
-				<ArtifactList
-					items={sortedItems}
-					focusedIndex={focusedIndex}
-					selectedIndices={selectedIndices}
+			}
+			search={
+				<SearchBar
+					query={state.query}
+					focused={state.focusZone === 'search'}
+					visibleCount={visibleItems.length}
+					totalCount={sortedItems.length}
+					onQueryChange={query => dispatch({type: 'SET_QUERY', query})}
+					onFocus={() => dispatch({type: 'SET_FOCUS_ZONE', zone: 'search'})}
+					onClear={() => dispatch({type: 'SET_QUERY', query: ''})}
+				/>
+			}
+			listPane={
+				<CandidateListPane
+					items={visibleItems}
+					cursorIndex={state.cursorIndex}
+					selectedPaths={state.selectedPaths}
 					viewStart={viewWindow.start}
 					viewEnd={viewWindow.end}
-					height={listHeight}
+					focused={state.focusZone === 'list'}
+					onRowFocus={focusRow}
+					onRowToggle={toggleRowSelection}
 				/>
-			</box>
-
-			<box marginTop={1}>
-				<Footer shortcuts={shortcuts} />
-			</box>
-
-			{confirmOpen ? (
-				<ConfirmModal
-					count={selectedPaths.size}
-					size={metrics.selectedSize}
-					dryRun={dryRun}
+			}
+			detailsPane={
+				<DetailsPane
+					item={focusedItem}
+					selectedCount={metrics.selectedCount}
+					selectedSize={metrics.selectedSize}
 					selectedTypeCounts={selectedTypeCounts}
-					terminalWidth={terminalWidth}
-					terminalHeight={terminalHeight}
+					dryRun={dryRun}
+					scanPhase={state.scanPhase}
+					sortBy={state.sortBy}
+					onRequestDelete={openDeleteConfirm}
+					onRescan={() => {
+						if (state.scanPhase !== 'loading') {
+							void runScan();
+						}
+					}}
+					onCycleSort={() => dispatch({type: 'CYCLE_SORT'})}
 				/>
-			) : null}
-		</box>
+			}
+			statusLine={
+				<StatusLine focusZone={state.focusZone} status={state.status} />
+			}
+			overlay={
+				state.confirmOpen ? (
+					<ConfirmDeleteModal
+						count={metrics.selectedCount}
+						size={metrics.selectedSize}
+						dryRun={dryRun}
+						selectedTypeCounts={selectedTypeCounts}
+						terminalWidth={terminalWidth}
+						terminalHeight={terminalHeight}
+					/>
+				) : state.helpOpen ? (
+					<HelpOverlay
+						terminalWidth={terminalWidth}
+						terminalHeight={terminalHeight}
+					/>
+				) : null
+			}
+		/>
 	);
 }
