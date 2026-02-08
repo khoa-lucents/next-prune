@@ -109,7 +109,15 @@ export default function App({
 
 	const focusedItem = visibleItems[state.cursorIndex];
 	const compactLayout = terminalWidth < 110;
-	const listHeight = Math.max(5, terminalHeight - (compactLayout ? 24 : 12));
+	const showDetailsPane = !compactLayout || terminalHeight >= 28;
+	const listHeight = compactLayout
+		? showDetailsPane
+			? Math.max(1, Math.floor((terminalHeight - 20) * 0.6))
+			: Math.max(1, terminalHeight - 20)
+		: Math.max(1, terminalHeight - 14);
+	const listPathMaxLength = compactLayout
+		? Math.max(18, terminalWidth - (showDetailsPane ? 38 : 30))
+		: Math.max(26, Math.floor(terminalWidth * 0.6) - 34);
 	const viewWindow = useMemo(
 		() => buildViewWindow(state.cursorIndex, listHeight, visibleItems.length),
 		[state.cursorIndex, listHeight, visibleItems.length],
@@ -531,10 +539,10 @@ export default function App({
 				<SummaryStrip
 					metrics={metrics}
 					scanPhase={state.scanPhase}
-					cwd={cwd}
 					cleanupScopeLabel={cleanupScopeLabel}
 					sortBy={state.sortBy}
 					query={state.query}
+					terminalWidth={terminalWidth}
 				/>
 			}
 			search={
@@ -543,6 +551,7 @@ export default function App({
 					focused={state.focusZone === 'search'}
 					visibleCount={visibleItems.length}
 					totalCount={sortedItems.length}
+					terminalWidth={terminalWidth}
 					onQueryChange={query => dispatch({type: 'SET_QUERY', query})}
 					onFocus={() => dispatch({type: 'SET_FOCUS_ZONE', zone: 'search'})}
 					onClear={() => dispatch({type: 'SET_QUERY', query: ''})}
@@ -556,6 +565,7 @@ export default function App({
 					viewStart={viewWindow.start}
 					viewEnd={viewWindow.end}
 					focused={state.focusZone === 'list'}
+					maxPathLength={listPathMaxLength}
 					onRowFocus={focusRow}
 					onRowToggle={toggleRowSelection}
 				/>
@@ -578,8 +588,13 @@ export default function App({
 					onCycleSort={() => dispatch({type: 'CYCLE_SORT'})}
 				/>
 			}
+			showDetailsPane={showDetailsPane}
 			statusLine={
-				<StatusLine focusZone={state.focusZone} status={state.status} />
+				<StatusLine
+					focusZone={state.focusZone}
+					status={state.status}
+					terminalWidth={terminalWidth}
+				/>
 			}
 			overlay={
 				state.confirmOpen ? (

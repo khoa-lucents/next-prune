@@ -10,6 +10,7 @@ interface CandidateListPaneProps {
 	viewStart: number;
 	viewEnd: number;
 	focused: boolean;
+	maxPathLength: number;
 	onRowFocus: (index: number) => void;
 	onRowToggle: (index: number) => void;
 }
@@ -30,6 +31,12 @@ const statusToken = (item: ArtifactItem, selected: boolean): string => {
 	return selected ? '[x]' : '[ ]';
 };
 
+const truncatePath = (value: string, maxLength: number): string => {
+	if (value.length <= maxLength) return value;
+	if (maxLength <= 3) return value.slice(0, maxLength);
+	return `${value.slice(0, maxLength - 3)}...`;
+};
+
 export function CandidateListPane({
 	items,
 	cursorIndex,
@@ -37,6 +44,7 @@ export function CandidateListPane({
 	viewStart,
 	viewEnd,
 	focused,
+	maxPathLength,
 	onRowFocus,
 	onRowToggle,
 }: CandidateListPaneProps) {
@@ -51,8 +59,9 @@ export function CandidateListPane({
 			flexDirection="column"
 			width="100%"
 			height="100%"
+			backgroundColor="black"
 		>
-			<box width="100%" marginBottom={1}>
+			<box width="100%" marginBottom={1} flexDirection="row">
 				<box width={5}>
 					<text>
 						<span fg="gray">
@@ -97,18 +106,18 @@ export function CandidateListPane({
 						const isSelected = selectedPaths.has(item.path);
 						const isDeleted = item.status === 'deleted';
 						const badge = CANDIDATE_BADGES[item.candidateType];
-						const backgroundColor = isFocused ? 'cyan' : undefined;
+						const backgroundColor = isFocused ? 'blue' : 'black';
 						const textColor = isDeleted
 							? 'gray'
 							: isFocused
-								? 'black'
+								? 'white'
 								: 'white';
 						const markerColor = isDeleted
 							? 'gray'
 							: isSelected
 								? 'green'
 								: isFocused
-									? 'black'
+									? 'cyan'
 									: 'gray';
 
 						return (
@@ -116,6 +125,7 @@ export function CandidateListPane({
 								key={item.path}
 								height={1}
 								width="100%"
+								flexDirection="row"
 								backgroundColor={backgroundColor}
 								onMouseDown={() => onRowFocus(absoluteIndex)}
 							>
@@ -138,10 +148,12 @@ export function CandidateListPane({
 										</span>
 									</text>
 								</box>
-								<box flexGrow={1}>
+								<box flexGrow={1} overflow="hidden">
 									<text>
 										<span fg={badge.color}>[{badge.label}]</span>{' '}
-										<span fg={textColor}>{item.relPath}</span>
+										<span fg={textColor}>
+											{truncatePath(item.relPath, maxPathLength)}
+										</span>
 									</text>
 								</box>
 							</box>

@@ -5,6 +5,7 @@ interface SearchBarProps {
 	focused: boolean;
 	visibleCount: number;
 	totalCount: number;
+	terminalWidth: number;
 	onQueryChange: (query: string) => void;
 	onFocus: () => void;
 	onClear: () => void;
@@ -15,10 +16,12 @@ export function SearchBar({
 	focused,
 	visibleCount,
 	totalCount,
+	terminalWidth,
 	onQueryChange,
 	onFocus,
 	onClear,
 }: SearchBarProps) {
+	const compact = terminalWidth < 100;
 	const canClear = query.length > 0;
 
 	return (
@@ -33,41 +36,43 @@ export function SearchBar({
 			flexDirection="row"
 			gap={1}
 			width="100%"
+			height={3}
+			backgroundColor="black"
 			onMouseDown={onFocus}
 		>
-			<box width={8}>
-				<text>
-					<span fg="gray">Path</span>
-				</text>
-			</box>
+			{compact ? null : (
+				<box width={5} flexShrink={0}>
+					<text>
+						<span fg="gray">Path</span>
+					</text>
+				</box>
+			)}
 
-			<box flexGrow={1}>
+			<box flexGrow={1} minWidth={12}>
 				<input
 					value={query}
-					placeholder="Type to filter by relative path..."
+					placeholder="filter path..."
 					onInput={onQueryChange}
 					focused={focused}
 					width="100%"
 				/>
 			</box>
 
-			<box width={22} justifyContent="flex-end">
-				<text>
-					<span fg="gray">
-						{visibleCount}/{totalCount} visible
-					</span>
-				</text>
-			</box>
+			{compact ? null : (
+				<box flexShrink={0} justifyContent="flex-end">
+					<text>
+						<span fg="gray">
+							{visibleCount}/{totalCount}
+						</span>
+					</text>
+				</box>
+			)}
 
-			<box
-				border
-				borderColor={canClear ? 'yellow' : 'gray'}
-				paddingLeft={1}
-				paddingRight={1}
-				onMouseDown={canClear ? onClear : undefined}
-			>
+			<box flexShrink={0} onMouseDown={canClear ? onClear : undefined}>
 				<text>
-					<span fg={canClear ? 'yellow' : 'gray'}>clear</span>
+					<span fg={canClear ? 'yellow' : 'gray'}>
+						{compact ? '[c]' : '[c] clear'}
+					</span>
 				</text>
 			</box>
 		</box>

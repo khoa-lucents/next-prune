@@ -48,6 +48,7 @@ export function DetailsPane({
 			flexDirection="column"
 			width="100%"
 			height="100%"
+			backgroundColor="black"
 		>
 			<box flexDirection="column" marginBottom={1}>
 				<text>

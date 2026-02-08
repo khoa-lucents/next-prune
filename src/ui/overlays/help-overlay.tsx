@@ -18,6 +18,7 @@ export function HelpOverlay({terminalWidth, terminalHeight}: HelpOverlayProps) {
 			height={terminalHeight}
 			justifyContent="center"
 			alignItems="center"
+			backgroundColor="black"
 			zIndex={20}
 		>
 			<box

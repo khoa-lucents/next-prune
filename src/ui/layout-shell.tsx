@@ -9,6 +9,7 @@ interface LayoutShellProps {
 	search: ReactNode;
 	listPane: ReactNode;
 	detailsPane: ReactNode;
+	showDetailsPane?: boolean;
 	statusLine: ReactNode;
 	overlay?: ReactNode;
 }
@@ -20,6 +21,7 @@ export function LayoutShell({
 	search,
 	listPane,
 	detailsPane,
+	showDetailsPane = true,
 	statusLine,
 	overlay,
 }: LayoutShellProps) {
@@ -31,6 +33,7 @@ export function LayoutShell({
 			height={terminalHeight}
 			padding={1}
 			flexDirection="column"
+			backgroundColor="black"
 		>
 			{summary}
 
@@ -42,12 +45,20 @@ export function LayoutShell({
 				flexDirection={compact ? 'column' : 'row'}
 				gap={1}
 			>
-				<box flexGrow={3} minHeight={8}>
-					{listPane}
-				</box>
-				<box flexGrow={2} minHeight={8}>
-					{detailsPane}
-				</box>
+				{compact && !showDetailsPane ? (
+					<box flexGrow={1} minHeight={8}>
+						{listPane}
+					</box>
+				) : (
+					<>
+						<box flexGrow={3} minHeight={8}>
+							{listPane}
+						</box>
+						<box flexGrow={2} minHeight={8}>
+							{detailsPane}
+						</box>
+					</>
+				)}
 			</box>
 
 			<box marginTop={1}>{statusLine}</box>

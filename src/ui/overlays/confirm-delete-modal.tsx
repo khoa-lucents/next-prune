@@ -34,6 +34,7 @@ export function ConfirmDeleteModal({
 			height={terminalHeight}
 			justifyContent="center"
 			alignItems="center"
+			backgroundColor="black"
 			zIndex={30}
 		>
 			<box
