@@ -1,6 +1,6 @@
 # Next Prune 🧹
 
-> Prune Next.js build artifacts and caches from your terminal. Interactive OpenTUI UI to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, workspace `node_modules`, and package-manager caches to free disk space.
+> Prune Next.js build artifacts and caches from your terminal. Interactive Clack prompts to scan and delete `.next`, `out`, `.vercel/output`, `.turbo`, workspace `node_modules`, and package-manager caches to free disk space.
 
 [![npm version](https://img.shields.io/npm/v/next-prune.svg)](https://www.npmjs.com/package/next-prune)
 [![CI](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/khoa-lucents/next-prune/actions/workflows/ci.yml)
@@ -30,12 +30,12 @@
 
 **Features:**
 
-- 🎯 **New:** OpenTUI command-center UI with dedicated list/details panes
+- 🎯 **New:** Clack-powered interactive workflow
 - 🔍 Scans recursively for Next.js, Vercel, and Turborepo build artifacts
 - 🧭 Detects custom Next.js build output via `distDir` in `next.config.*` (including Next.js 16 projects)
 - 📊 Shows disk usage for each directory found
-- ⇅ Sort artifacts by Size, Age, or Path
-- 🔎 Inline search/filter and keyboard-first navigation
+- ⇅ Sort candidates by size, age, or path before selection
+- 🧾 Interactive multi-select with candidate metadata hints
 - ✅ Select multiple directories for batch deletion
 - 🚀 Non-interactive modes for scripting (`--list`, `--json`)
 - 🧱 Monorepo/workspace cleanup controls (`--monorepo`, `--cleanup-scope`, `--workspace-detect`)
@@ -130,9 +130,9 @@ bun run test:pilotty
 
 What it validates:
 
-- OpenTUI app launches in a real PTY session
-- keyboard navigation updates screen state (`t`, `d`, `n`, `y`, `q`)
-- confirm modal opens/cancels correctly
+- Clack interactive flow launches in a real PTY session
+- sort prompt and candidate multiselect render correctly
+- confirmation and deletion prompts execute in sequence
 - confirmed deletion actually removes an artifact directory
 
 ## Contributing

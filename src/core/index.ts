@@ -5,3 +5,4 @@ export * from './scanner.js';
 export * from './workspaces.js';
 export * from './asset-scanner.js';
 export * from './delete.js';
+export * from './candidates.js';

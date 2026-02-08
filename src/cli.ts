@@ -4,54 +4,23 @@ import process from 'node:process';
 import path from 'node:path';
 import meow from 'meow';
 import {findUnusedAssets} from './core/asset-scanner.js';
+import {
+	isApplyProtectedCandidate,
+	parseScannerCleanupScopes,
+	resolveAllowedCandidateTypes,
+	resolveCandidateType,
+} from './core/candidates.js';
 import {filterNeverDelete, loadConfig} from './core/config.js';
 import {deleteItems, getTotalSize} from './core/delete.js';
 import {human, timeAgo} from './core/format.js';
 import {getArtifactStats, scanArtifacts} from './core/scanner.js';
-import type {
-	CleanupScope,
-	PruneConfig,
-	RuntimeScanOptions,
-	ScanItem,
-} from './core/types.js';
+import type {PruneConfig, RuntimeScanOptions, ScanItem} from './core/types.js';
 import {runInteractiveApp} from './index.js';
 import type {RuntimeProps} from './index.js';
-
-type CandidateType = 'artifact' | 'asset' | 'node_modules' | 'pm-cache';
 
 type ResolvedScanOptions = RuntimeScanOptions & {
 	includeNodeModules: boolean;
 	includeProjectLocalPmCaches: boolean;
-};
-
-const ALL_CANDIDATE_TYPES: CandidateType[] = [
-	'artifact',
-	'asset',
-	'node_modules',
-	'pm-cache',
-];
-const NODE_MODULES_PATTERN = /(^|\/)node_modules(\/|$)/;
-const PM_CACHE_PATTERNS = [
-	/(^|\/)\.pnpm-store(\/|$)/,
-	/(^|\/)\.pnpm-cache(\/|$)/,
-	/(^|\/)\.npm(\/|$)/,
-	/(^|\/)\.yarn\/cache(\/|$)/,
-	/(^|\/)\.yarn\/unplugged(\/|$)/,
-];
-const CLEANUP_SCOPE_MAP: Record<string, CandidateType[]> = {
-	default: ALL_CANDIDATE_TYPES,
-	all: ALL_CANDIDATE_TYPES,
-	project: ALL_CANDIDATE_TYPES,
-	workspace: ALL_CANDIDATE_TYPES,
-	safe: ['artifact', 'asset'],
-	artifacts: ['artifact', 'asset'],
-	artifact: ['artifact', 'asset'],
-	'node-modules': ['node_modules'],
-	node_modules: ['node_modules'],
-	nodemodules: ['node_modules'],
-	'pm-caches': ['pm-cache'],
-	pm_caches: ['pm-cache'],
-	pmcaches: ['pm-cache'],
 };
 
 const cli = meow(
@@ -141,100 +110,6 @@ const cli = meow(
 		},
 	},
 );
-
-const normalizePathForMatching = (value: string): string =>
-	value.split(path.sep).join('/').toLowerCase();
-
-const resolveCandidateType = (
-	item: Pick<ScanItem, 'path' | 'type' | 'cleanupType'>,
-): CandidateType => {
-	if (item.type === 'asset' || item.cleanupType === 'asset') return 'asset';
-	if (item.cleanupType === 'pm-cache') return 'pm-cache';
-	if (item.cleanupType === 'workspace-node-modules') return 'node_modules';
-
-	const normalizedPath = normalizePathForMatching(item.path);
-	if (NODE_MODULES_PATTERN.test(normalizedPath)) return 'node_modules';
-	if (PM_CACHE_PATTERNS.some(pattern => pattern.test(normalizedPath))) {
-		return 'pm-cache';
-	}
-
-	return 'artifact';
-};
-
-const parseCleanupScope = (
-	cleanupScope: string | undefined,
-): Set<CandidateType> => {
-	if (!cleanupScope || cleanupScope.trim().length === 0) {
-		return new Set(ALL_CANDIDATE_TYPES);
-	}
-
-	const resolved = new Set<CandidateType>();
-	for (const rawToken of cleanupScope.split(',')) {
-		const normalizedToken = rawToken.trim().toLowerCase();
-		if (!normalizedToken) continue;
-		const mappedTypes = CLEANUP_SCOPE_MAP[normalizedToken];
-		if (!mappedTypes) {
-			throw new Error(
-				`Invalid --cleanup-scope value: "${rawToken}". Expected one or more of: all, project, workspace, safe, node-modules, pm-caches`,
-			);
-		}
-		for (const mappedType of mappedTypes) {
-			resolved.add(mappedType);
-		}
-	}
-
-	if (resolved.size === 0) {
-		throw new Error(
-			'Invalid --cleanup-scope value: expected one or more valid scope tokens.',
-		);
-	}
-
-	return resolved;
-};
-
-const resolveAllowedCandidateTypes = (
-	options: ResolvedScanOptions,
-): Set<CandidateType> => {
-	const allowed = parseCleanupScope(options.cleanupScope);
-	if (!options.includeNodeModules) {
-		allowed.delete('node_modules');
-	}
-	if (!options.includeProjectLocalPmCaches) {
-		allowed.delete('pm-cache');
-	}
-	return allowed;
-};
-
-const parseScannerCleanupScopes = (
-	cleanupScope: string | undefined,
-): CleanupScope[] | undefined => {
-	if (!cleanupScope || cleanupScope.trim().length === 0) {
-		return undefined;
-	}
-
-	const resolved = new Set<CleanupScope>();
-	for (const rawToken of cleanupScope.split(',')) {
-		const normalizedToken = rawToken.trim().toLowerCase();
-		if (!normalizedToken) continue;
-		if (normalizedToken === 'all') {
-			resolved.add('project');
-			resolved.add('workspace');
-			continue;
-		}
-		if (normalizedToken === 'project' || normalizedToken === 'workspace') {
-			resolved.add(normalizedToken);
-		}
-	}
-
-	return resolved.size > 0 ? [...resolved] : undefined;
-};
-
-const isApplyProtectedCandidate = (
-	item: Pick<ScanItem, 'path' | 'type' | 'cleanupType'>,
-): boolean => {
-	const candidateType = resolveCandidateType(item);
-	return candidateType === 'node_modules' || candidateType === 'pm-cache';
-};
 
 const outputListResults = (items: readonly ScanItem[], cwd: string): void => {
 	for (const item of items) {
@@ -406,10 +281,16 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
-	const needsScan = forceYes || cli.flags.list || cli.flags.json;
-	const scannedItems = needsScan
-		? await collectItems(cwd, config, scanOptions)
-		: [];
+	let scannedItems: ScanItem[] = [];
+	try {
+		scannedItems = await collectItems(cwd, config, scanOptions);
+	} catch (error) {
+		process.stderr.write(
+			`Scan failed: ${String(error instanceof Error ? error.message : error)}\n`,
+		);
+		process.exitCode = 1;
+		return;
+	}
 
 	if (cli.flags.list || cli.flags.json) {
 		handleListMode(scannedItems, cwd, Boolean(cli.flags.json));
@@ -424,9 +305,9 @@ const main = async (): Promise<void> => {
 	const runtimeProps: RuntimeProps = {
 		cwd,
 		dryRun,
-		confirmImmediately: false,
 		config,
 		scanOptions,
+		items: scannedItems,
 	};
 
 	await runInteractiveApp(runtimeProps);
